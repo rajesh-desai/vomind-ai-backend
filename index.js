@@ -1,10 +1,14 @@
 require('dotenv').config();
 const express = require('express');
+const http = require('http');
+const WebSocket = require('ws');
 const twilio = require('twilio');
 const { createClient } = require('@supabase/supabase-js');
 const { validatePhoneNumber } = require('./utils/phoneValidator');
 
 const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
 const PORT = process.env.PORT || 3000;
 
 // Middleware to parse URL-encoded bodies (for Twilio webhooks)
@@ -247,8 +251,170 @@ app.post('/call-events', async (req, res) => {
   });
 });
 
+// Endpoint to start media stream
+app.post('/start-media-stream', async (req, res) => {
+  const { to, message } = req.body;
+
+  if (!to) {
+    return res.status(400).json({ error: 'Phone number is required' });
+  }
+
+  // Validate phone number
+  const validation = validatePhoneNumber(to);
+  
+  if (!validation.isValid) {
+    return res.status(400).json({ 
+      error: validation.error,
+      providedNumber: validation.original
+    });
+  }
+  const twimlUrl = `${publicUrl}/media-stream-twiml`;
+  try {
+    const call = await client.calls.create({
+      url: twimlUrl,
+      to: validation.formatted,
+      from: twilioPhoneNumber,
+      statusCallback: `${publicUrl}/call-events`,
+      statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
+    });
+    res.json({
+      success: true,
+      callSid: call.sid,
+      message: 'Media stream call initiated successfully',
+      to: validation.formatted,
+      country: validation.country,
+      twimlUrl: twimlUrl
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// TwiML endpoint for media stream (supports both GET and POST)
+const handleMediaStreamTwiml = (req, res) => {
+  
+  const twiml = new twilio.twiml.VoiceResponse();
+  
+  twiml.say({ voice: 'alice' }, 'Connected to media stream. Your audio is being processed in real-time.');
+  // Start media stream
+  const publicHost = publicUrl.replace('https://', '').replace('http://', '');
+  const wsUrl = `wss://${publicHost}/media-stream`;
+
+  const start = twiml.start();
+  start.stream({
+    url: wsUrl,
+    track: 'both_tracks' // Stream both inbound and outbound audio
+  });
+  
+  // Keep the call active
+  twiml.pause({ length: 60 });
+  
+  const twimlResponse = twiml.toString();
+  
+  res.type('text/xml');
+  res.send(twimlResponse);
+};
+
+app.post('/media-stream-twiml', handleMediaStreamTwiml);
+
+// WebSocket handler for media streams
+const activeSessions = new Map();
+
+wss.on('connection', (ws) => {
+  console.log('New WebSocket connection established');
+  let sessionData = {
+    callSid: null,
+    streamSid: null,
+    audioBuffer: []
+  };
+
+  ws.on('message', (message) => {
+    try {
+      const msg = JSON.parse(message);
+      
+      switch (msg.event) {
+        case 'connected':
+          break;
+          
+        case 'start':
+          sessionData.callSid = msg.start.callSid;
+          sessionData.streamSid = msg.start.streamSid;
+          activeSessions.set(sessionData.callSid, sessionData);
+          break;
+          
+        case 'media':
+          // Handle incoming audio data
+          // msg.media.payload contains base64-encoded audio (mulaw, 8kHz)
+          if (msg.media.track === 'inbound') {
+            // Audio from the caller
+            sessionData.audioBuffer.push({
+              timestamp: msg.media.timestamp,
+              payload: msg.media.payload,
+              track: 'inbound'
+            });
+          } else if (msg.media.track === 'outbound') {
+            // Audio to the caller
+            sessionData.audioBuffer.push({
+              timestamp: msg.media.timestamp,
+              payload: msg.media.payload,
+              track: 'outbound'
+            });
+          }
+          
+          // Process audio in chunks (every 100 packets)
+          if (sessionData.audioBuffer.length >= 100) {
+
+            sessionData.audioBuffer = [];
+          }
+          break;
+          
+        case 'stop':
+          activeSessions.delete(sessionData.callSid);
+          break;
+          
+        default:
+      }
+    } catch (error) {
+      console.error('Error processing WebSocket message:', error);
+    }
+  });
+
+  ws.on('close', () => {
+    if (sessionData.callSid) {
+      activeSessions.delete(sessionData.callSid);
+    }
+  });
+  ws.on('error', (error) => {
+  });
+});
+
+// Endpoint to get active media stream sessions
+app.get('/active-streams', (req, res) => {
+  const sessions = Array.from(activeSessions.entries()).map(([callSid, data]) => ({
+    callSid,
+    streamSid: data.streamSid,
+    bufferSize: data.audioBuffer.length
+  }));
+  
+  res.json({
+    count: sessions.length,
+    sessions
+  });
+});
+
 // Start the server
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
-  console.log(`Make sure your Twilio webhook URLs are configured to point to this server`);
+  console.log(`WebSocket server ready for media streams`);
+  console.log(`PUBLIC_URL configured as: ${publicUrl}`);
+  console.log(`Media stream TwiML endpoint: ${publicUrl}/media-stream-twiml`);
+  
+  // Check if PUBLIC_URL is localhost (which won't work with Twilio)
+  if (publicUrl.includes('localhost') || publicUrl.includes('127.0.0.1')) {
+    console.warn('⚠️  WARNING: PUBLIC_URL is set to localhost!');
+    console.warn('⚠️  Twilio cannot reach localhost. Please use ngrok and set PUBLIC_URL in .env');
+  }
 });
