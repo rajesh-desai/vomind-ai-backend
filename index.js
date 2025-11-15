@@ -20,7 +20,11 @@ const client = twilio(accountSid, authToken);
 
 // Root endpoint
 app.get('/', (req, res) => {
-  res.send('Twilio Programmable Voice with Express is running!');
+  res.send('VoMindAI Programmable Voice AI Assistant running!');
+});
+
+app.get('/health', (req, res) => {
+  res.send('VoMindAI is healthy!');
 });
 
 // Endpoint to make an outbound call
@@ -35,7 +39,9 @@ app.post('/make-call', async (req, res) => {
     const call = await client.calls.create({
       url: `${publicUrl}/voice-response?message=${encodeURIComponent(message || 'Hello from Twilio!')}`,
       to: to,
-      from: twilioPhoneNumber
+      from: twilioPhoneNumber,
+      statusCallback: `${publicUrl}/call-events`,
+      statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
     });
 
     res.json({
@@ -107,6 +113,53 @@ app.post('/call-status', (req, res) => {
   console.log(`Call ${callSid} status: ${callStatus}`);
   
   res.sendStatus(200);
+});
+
+// Call events tracking endpoint for outgoing calls
+app.post('/call-events', (req, res) => {
+  const {
+    CallSid,
+    CallStatus,
+    Direction,
+    From,
+    To,
+    Duration,
+    Timestamp,
+    CallDuration,
+    RecordingUrl,
+    RecordingSid
+  } = req.body;
+
+  // Log comprehensive call event data
+  console.log('=== Outgoing Call Event ===');
+  console.log(`Call SID: ${CallSid}`);
+  console.log(`Status: ${CallStatus}`);
+  console.log(`Direction: ${Direction}`);
+  console.log(`From: ${From}`);
+  console.log(`To: ${To}`);
+  console.log(`Timestamp: ${Timestamp}`);
+  console.log(`Recording SID: ${RecordingSid}`);
+   console.log(`Recording URL: ${RecordingUrl}`);
+  console.log('===========================');
+  
+  if (Duration) {
+    console.log(`Duration: ${Duration} seconds`);
+  }
+  
+  if (CallDuration) {
+    console.log(`Total Call Duration: ${CallDuration} seconds`);
+  }
+
+  if (RecordingUrl) {
+    console.log(`Recording URL: ${RecordingUrl}`);
+  }
+  // Respond to acknowledge receipt
+  res.status(200).json({
+    success: true,
+    message: 'Call event received',
+    callSid: CallSid,
+    status: CallStatus
+  });
 });
 
 // Start the server
