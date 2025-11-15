@@ -7,11 +7,18 @@
     "dev": "nodemon index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["twilio", "voice", "programmable-voice", "express", "telephony"],
+  "keywords": [
+    "twilio",
+    "voice",
+    "programmable-voice",
+    "express",
+    "telephony"
+  ],
   "author": "",
   "license": "ISC",
   "description": "A Node.js application using Express and Twilio Programmable Voice API for handling voice calls",
   "dependencies": {
+    "@supabase/supabase-js": "^2.81.1",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
     "twilio": "^5.10.5"
