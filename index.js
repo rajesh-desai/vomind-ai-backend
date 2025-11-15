@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const twilio = require('twilio');
 const { createClient } = require('@supabase/supabase-js');
+const { validatePhoneNumber } = require('./utils/phoneValidator');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -41,10 +42,19 @@ app.post('/make-call', async (req, res) => {
     return res.status(400).json({ error: 'Phone number is required' });
   }
 
+  // Validate phone number
+  const validation = validatePhoneNumber(to);
+  if (!validation.isValid) {
+    return res.status(400).json({ 
+      error: validation.error,
+      providedNumber: validation.original
+    });
+  }
+
   try {
     const call = await client.calls.create({
       url: `${publicUrl}/voice-response?message=${encodeURIComponent(message || 'Hello from Twilio!')}`,
-      to: to,
+      to: validation?.formatted, // Use validated and formatted number
       from: twilioPhoneNumber,
       statusCallback: `${publicUrl}/call-events`,
       statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
@@ -53,7 +63,9 @@ app.post('/make-call', async (req, res) => {
     res.json({
       success: true,
       callSid: call.sid,
-      message: 'Call initiated successfully'
+      message: 'Call initiated successfully',
+      to: validation?.formatted,
+      country: validation?.country
     });
   } catch (error) {
     console.error('Error making call:', error);
