@@ -5,10 +5,13 @@ const WebSocket = require('ws');
 const twilio = require('twilio');
 const { createClient } = require('@supabase/supabase-js');
 const { validatePhoneNumber } = require('./utils/phoneValidator');
+const OpenAIRealtimeSession = require('./utils/openAIRealtime');
 
 const app = express();
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const wss = new WebSocket.Server({ 
+  server
+});
 const PORT = process.env.PORT || 3000;
 
 // Middleware to parse URL-encoded bodies (for Twilio webhooks)
@@ -104,13 +107,21 @@ app.post('/handle-key', (req, res) => {
   const twiml = new twilio.twiml.VoiceResponse();
 
   if (digit === '1') {
-    twiml.say({ voice: 'alice' }, 'You pressed 1. Thank you for your response.');
+    // Connect to media stream instead of hanging up
+    twiml.say({ voice: 'alice' }, 'Connecting you to the AI assistant now.');
+    
+    const connect = twiml.connect();
+    const publicHost = publicUrl.replace('https://', '').replace('http://', '');
+    const wsUrl = `wss://${publicHost}/media-stream`;
+    
+    connect.stream({
+      url: wsUrl,
+      track: 'both_tracks'
+    });
   } else {
-    twiml.say({ voice: 'alice' }, 'Invalid input. Please try again.');
+    twiml.say({ voice: 'alice' }, 'Invalid input. Goodbye!');
+    twiml.hangup();
   }
-
-  twiml.say({ voice: 'alice' }, 'Goodbye!');
-  twiml.hangup();
 
   res.type('text/xml');
   res.send(twiml.toString());
@@ -295,87 +306,123 @@ app.post('/start-media-stream', async (req, res) => {
 
 // TwiML endpoint for media stream (supports both GET and POST)
 const handleMediaStreamTwiml = (req, res) => {
-  
-  const twiml = new twilio.twiml.VoiceResponse();
-  
-  twiml.say({ voice: 'alice' }, 'Connected to media stream. Your audio is being processed in real-time.');
-  // Start media stream
-  const publicHost = publicUrl.replace('https://', '').replace('http://', '');
-  const wsUrl = `wss://${publicHost}/media-stream`;
-
-  const start = twiml.start();
-  start.stream({
-    url: wsUrl,
-    track: 'both_tracks' // Stream both inbound and outbound audio
-  });
-  
-  // Keep the call active
-  twiml.pause({ length: 60 });
-  
-  const twimlResponse = twiml.toString();
-  
-  res.type('text/xml');
-  res.send(twimlResponse);
+  try {
+    
+    const twiml = new twilio.twiml.VoiceResponse();
+    
+    // Connect to media stream for bidirectional audio
+ twiml.say({ voice: 'alice' }, 'Connected to media stream. Your audio is being processed in real-time.');
+    const publicHost = publicUrl.replace('https://', '').replace('http://', '');
+    const wsUrl = `wss://${publicHost}/media-stream`;
+     const start = twiml.start();
+    start.stream({
+      url: wsUrl,
+      track: 'both_tracks'
+    });
+    
+      twiml.pause({ length: 60 });
+    console.log(`TwiML configured with WebSocket URL: ${wsUrl}`);
+    
+    const twimlResponse = twiml.toString();
+    console.log('TwiML Response:', twimlResponse);
+    console.log('=====================================');
+    
+    res.type('text/xml');
+    res.send(twimlResponse);
+  } catch (error) {
+    console.error('Error in handleMediaStreamTwiml:', error);
+    res.status(500).send('Internal Server Error');
+  }
 };
 
 app.post('/media-stream-twiml', handleMediaStreamTwiml);
+app.get('/media-stream-twiml', handleMediaStreamTwiml);
 
-// WebSocket handler for media streams
+// WebSocket handler for media streams with OpenAI Realtime API
 const activeSessions = new Map();
+const openAISessions = new Map();
 
-wss.on('connection', (ws) => {
-  console.log('New WebSocket connection established');
+
+wss.on('connection', async (ws, req) => {
+  
   let sessionData = {
     callSid: null,
     streamSid: null,
-    audioBuffer: []
+    audioBuffer: [],
+    openAISession: null
   };
 
-  ws.on('message', (message) => {
+  ws.on('message', async (message) => {
     try {
       const msg = JSON.parse(message);
       
       switch (msg.event) {
         case 'connected':
+          console.log('Media stream connected:', msg);
           break;
           
         case 'start':
           sessionData.callSid = msg.start.callSid;
           sessionData.streamSid = msg.start.streamSid;
           activeSessions.set(sessionData.callSid, sessionData);
+          
+          // Initialize OpenAI Realtime session
+          try {
+            const openAISession = new OpenAIRealtimeSession(
+              sessionData.callSid,
+              sessionData.streamSid
+            );
+            await openAISession.connect();
+            openAISession.setTwilioWebSocket(ws);
+            
+            sessionData.openAISession = openAISession;
+            openAISessions.set(sessionData.callSid, openAISession);
+            
+            console.log(`[${sessionData.callSid}] OpenAI Realtime session initialized`);
+          } catch (error) {
+            console.error(`[${sessionData.callSid}] Failed to initialize OpenAI:`, error.message);
+          }
           break;
           
         case 'media':
-          // Handle incoming audio data
-          // msg.media.payload contains base64-encoded audio (mulaw, 8kHz)
-          if (msg.media.track === 'inbound') {
-            // Audio from the caller
-            sessionData.audioBuffer.push({
-              timestamp: msg.media.timestamp,
-              payload: msg.media.payload,
-              track: 'inbound'
-            });
-          } else if (msg.media.track === 'outbound') {
-            // Audio to the caller
-            sessionData.audioBuffer.push({
-              timestamp: msg.media.timestamp,
-              payload: msg.media.payload,
-              track: 'outbound'
-            });
+          // Handle incoming audio data from caller
+          if (msg.media.track === 'inbound' && sessionData.openAISession) {
+            // Send audio to OpenAI for processing
+            sessionData.openAISession.handleIncomingAudio(msg.media.payload);
           }
           
-          // Process audio in chunks (every 100 packets)
-          if (sessionData.audioBuffer.length >= 100) {
-
+          // Store audio for debugging/logging
+          sessionData.audioBuffer.push({
+            timestamp: msg.media.timestamp,
+            payload: msg.media.payload,
+            track: msg.media.track
+          });
+          
+          // Clear buffer periodically
+          if (sessionData.audioBuffer.length >= 1000) {
+            console.log(`[${sessionData.callSid}] Processed ${sessionData.audioBuffer.length} audio packets`);
             sessionData.audioBuffer = [];
           }
           break;
           
         case 'stop':
+          console.log(`Media stream stopped for call: ${sessionData.callSid}`);
+          
+          // Get conversation history before closing
+          if (sessionData.openAISession) {
+            const history = sessionData.openAISession.getConversationHistory();
+            console.log(`[${sessionData.callSid}] Conversation history:`, JSON.stringify(history, null, 2));
+            
+            // Close OpenAI session
+            sessionData.openAISession.close();
+            openAISessions.delete(sessionData.callSid);
+          }
+          
           activeSessions.delete(sessionData.callSid);
           break;
           
         default:
+          console.log(`[${sessionData.callSid}] Unknown event:`, msg.event);
       }
     } catch (error) {
       console.error('Error processing WebSocket message:', error);
@@ -383,11 +430,19 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
+    console.log('WebSocket connection closed');
     if (sessionData.callSid) {
+      // Cleanup
+      if (sessionData.openAISession) {
+        sessionData.openAISession.close();
+        openAISessions.delete(sessionData.callSid);
+      }
       activeSessions.delete(sessionData.callSid);
     }
   });
+
   ws.on('error', (error) => {
+    console.error('WebSocket error:', error);
   });
 });
 
@@ -396,12 +451,33 @@ app.get('/active-streams', (req, res) => {
   const sessions = Array.from(activeSessions.entries()).map(([callSid, data]) => ({
     callSid,
     streamSid: data.streamSid,
-    bufferSize: data.audioBuffer.length
+    bufferSize: data.audioBuffer.length,
+    openAIConnected: data.openAISession ? data.openAISession.isConnected : false
   }));
   
   res.json({
     count: sessions.length,
     sessions
+  });
+});
+
+// Endpoint to get conversation history for a specific call
+app.get('/conversation/:callSid', (req, res) => {
+  const { callSid } = req.params;
+  const openAISession = openAISessions.get(callSid);
+  
+  if (!openAISession) {
+    return res.status(404).json({
+      error: 'Call not found or session ended',
+      callSid
+    });
+  }
+  
+  const history = openAISession.getConversationHistory();
+  res.json({
+    callSid,
+    conversationHistory: history,
+    messageCount: history.length
   });
 });
 
