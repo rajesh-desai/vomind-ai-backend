@@ -361,21 +361,48 @@ wss.on('connection', async (ws, req) => {
           sessionData.streamSid = msg.start.streamSid;
           activeSessions.set(sessionData.callSid, sessionData);
           
-          // Initialize OpenAI Realtime session
-          try {
-            const openAISession = new OpenAIRealtimeSession(
-              sessionData.callSid,
-              sessionData.streamSid
-            );
-            await openAISession.connect();
-            openAISession.setTwilioWebSocket(ws);
-            
-            sessionData.openAISession = openAISession;
-            openAISessions.set(sessionData.callSid, openAISession);
-            
-            console.log(`[${sessionData.callSid}] OpenAI Realtime session initialized`);
-          } catch (error) {
-            console.error(`[${sessionData.callSid}] Failed to initialize OpenAI:`, error.message);
+          // Initialize OpenAI Realtime session with retry logic
+          let retryCount = 0;
+          const maxRetries = 3;
+          let openAIInitialized = false;
+          
+          while (retryCount < maxRetries && !openAIInitialized) {
+            try {
+              const openAISession = new OpenAIRealtimeSession(
+                sessionData.callSid,
+                sessionData.streamSid
+              );
+              await openAISession.connect();
+              openAISession.setTwilioWebSocket(ws);
+              
+              sessionData.openAISession = openAISession;
+              openAISessions.set(sessionData.callSid, openAISession);
+              openAIInitialized = true;
+              
+              console.log(`[${sessionData.callSid}] ✅ OpenAI Realtime session initialized`);
+            } catch (error) {
+              retryCount++;
+              console.error(`[${sessionData.callSid}] ❌ Failed to initialize OpenAI (attempt ${retryCount}/${maxRetries}):`, error.message);
+              
+              if (retryCount < maxRetries) {
+                console.log(`[${sessionData.callSid}] Retrying in ${retryCount} seconds...`);
+                await new Promise(resolve => setTimeout(resolve, retryCount * 1000));
+              } else {
+                console.error(`[${sessionData.callSid}] ⚠️ All OpenAI connection attempts failed. Operating in fallback mode.`);
+                
+                // Send a clear message to the user about the failure
+                try {
+                  const fallbackMessage = {
+                    event: 'clear',
+                    streamSid: sessionData.streamSid
+                  };
+                  ws.send(JSON.stringify(fallbackMessage));
+                  console.log(`[${sessionData.callSid}] Sent fallback notification to caller`);
+                } catch (notifyError) {
+                  console.error(`[${sessionData.callSid}] Failed to send fallback notification:`, notifyError.message);
+                }
+              }
+            }
           }
           break;
           
