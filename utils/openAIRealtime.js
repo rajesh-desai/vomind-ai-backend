@@ -16,10 +16,15 @@ class OpenAIRealtimeSession {
     
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
     if (!OPENAI_API_KEY) {
-      throw new Error('OPENAI_API_KEY is not configured');
+      throw new Error('OPENAI_API_KEY is not configured in .env file');
     }
     
-    this.openAiWsUrl = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01';
+    // Validate API key format
+    if (!OPENAI_API_KEY.startsWith('sk-')) {
+      throw new Error('OPENAI_API_KEY appears to be invalid (should start with sk-)');
+    }
+    
+ this.openAiWsUrl = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17';
   }
 
   /**
@@ -37,7 +42,6 @@ class OpenAIRealtimeSession {
       });
 
       this.openAiWs.on('open', () => {
-        console.log(`[${this.callSid}] Connected to OpenAI Realtime API`);
         this.isConnected = true;
         
         // Configure session for Twilio compatibility
@@ -105,12 +109,10 @@ class OpenAIRealtimeSession {
    */
   sendToTwilio(audioBase64) {
     if (!this.twilioWs) {
-      console.error(`[${this.callSid}] Twilio WebSocket not set`);
       return;
     }
     
     if (this.twilioWs.readyState !== WebSocket.OPEN) {
-      console.warn(`[${this.callSid}] Twilio WebSocket not open (state: ${this.twilioWs.readyState})`);
       return;
     }
 
@@ -123,9 +125,7 @@ class OpenAIRealtimeSession {
         }
       };
       this.twilioWs.send(JSON.stringify(media));
-      console.log(`[${this.callSid}] ✓ Sent ${audioBase64.length} bytes audio to Twilio`);
     } catch (error) {
-      console.error(`[${this.callSid}] Error sending to Twilio:`, error.message);
     }
   }
 
@@ -179,11 +179,7 @@ class OpenAIRealtimeSession {
           // Trigger response generation
           console.log(`[${this.callSid}] Requesting OpenAI response...`);
           this.sendToOpenAI({
-            type: 'response.create',
-            response: {
-              modalities: ['text', 'audio'],
-              instructions: 'Please respond to the user.'
-            }
+            type: 'response.create'
           });
           break;
 
@@ -202,30 +198,17 @@ class OpenAIRealtimeSession {
           break;
 
         case 'response.output_item.added':
-          console.log(`[${this.callSid}] Output item added`);
+          console.log(`[${this.callSid}] Output item added:`, message.item.type);
+          break;
+
+        case 'response.output_item.done':
           break;
 
         case 'response.content_part.added':
-          console.log(`[${this.callSid}] Content part added`);
-          break;
-
-        case 'response.audio.delta':
-          // OpenAI is sending audio response
-          if (message.delta) {
-            console.log(`[${this.callSid}] Received audio delta from OpenAI (length: ${message.delta.length})`);
-            // Send audio directly to Twilio
-            this.sendToTwilio(message.delta);
-          } else {
-            console.warn(`[${this.callSid}] Audio delta received but no data`);
-          }
-          break;
-
-        case 'response.audio.done':
-          console.log(`[${this.callSid}] Audio response completed`);
           break;
 
         case 'response.audio_transcript.delta':
-          // AI's speech transcription
+          // AI's speech transcription in progress
           if (message.delta) {
             process.stdout.write(message.delta);
           }
@@ -241,8 +224,38 @@ class OpenAIRealtimeSession {
           });
           break;
 
+        case 'response.audio.delta':
+          // OpenAI is sending audio response - this is the audio that plays back to user
+          if (message.delta) {
+            console.log(`[${this.callSid}] ✓ Received audio delta (${message.delta.length} bytes) - Sending to caller...`);
+            this.sendToTwilio(message.delta);
+          } else {
+            console.warn(`[${this.callSid}] ✗ Audio delta received but no data`);
+          }
+          break;
+        
+        case 'response.audio.done':
+          console.log(`[${this.callSid}] ✓ Audio streaming completed - User should have heard the AI speaking`);
+          break;
+
         case 'response.done':
-          console.log(`[${this.callSid}] Response completed`);
+          const response = message.response;
+          // Extract transcript from response
+          if (response.output && response.output.length > 0) {
+            const firstOutput = response.output[0];
+            if (firstOutput.content && firstOutput.content.length > 0) {
+              const audioContent = firstOutput.content.find(c => c.type === 'audio');
+              if (audioContent && audioContent.transcript) {
+                console.log(`[${this.callSid}]   📝 Transcript: "${audioContent.transcript}"`);
+              }
+            }
+          }
+          
+          // Show token usage
+          if (response.usage) {
+            console.log(`[${this.callSid}]   💰 Tokens: ${response.usage.total_tokens} (in: ${response.usage.input_tokens}, out: ${response.usage.output_tokens})`);
+            console.log(`[${this.callSid}]   🎵 Audio tokens sent to user: ${response.usage.output_token_details?.audio_tokens || 0}`);
+          }
           break;
 
         case 'error':

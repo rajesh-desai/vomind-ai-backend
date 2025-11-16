@@ -307,21 +307,16 @@ app.post('/start-media-stream', async (req, res) => {
 // TwiML endpoint for media stream (supports both GET and POST)
 const handleMediaStreamTwiml = (req, res) => {
   try {
-    
     const twiml = new twilio.twiml.VoiceResponse();
     
-    // Connect to media stream for bidirectional audio
- twiml.say({ voice: 'alice' }, 'Connected to media stream. Your audio is being processed in real-time.');
+    // Use Connect + Stream for BIDIRECTIONAL audio (user can hear AI responses)
     const publicHost = publicUrl.replace('https://', '').replace('http://', '');
     const wsUrl = `wss://${publicHost}/media-stream`;
-     const start = twiml.start();
-    start.stream({
-      url: wsUrl,
-      track: 'both_tracks'
+    const connect = twiml.connect();
+    connect.stream({
+      url: wsUrl
     });
-    
-      twiml.pause({ length: 60 });
-    console.log(`TwiML configured with WebSocket URL: ${wsUrl}`);
+  
     
     const twimlResponse = twiml.toString();
     console.log('TwiML Response:', twimlResponse);
