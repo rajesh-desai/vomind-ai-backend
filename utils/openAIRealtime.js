@@ -20,6 +20,18 @@ class OpenAIRealtimeSession {
     this.errorCount = 0;
     this.lastErrorTime = null;
     
+    // Latency tracking
+    this.latencyMetrics = {
+      speechStartTime: null,
+      speechStopTime: null,
+      responseRequestTime: null,
+      responseCreatedTime: null,
+      firstAudioChunkTime: null,
+      audioCompleteTime: null,
+      responseDoneTime: null
+    };
+    this.currentTurnMetrics = {};
+    
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
     if (!OPENAI_API_KEY) {
       throw new Error('OPENAI_API_KEY is not configured in .env file');
@@ -254,17 +266,26 @@ class OpenAIRealtimeSession {
           break;
 
         case 'input_audio_buffer.speech_started':
-          console.log(`[${this.callSid}] User started speaking`);
+          this.latencyMetrics.speechStartTime = Date.now();
+          console.log(`[${this.callSid}] 🎤 User started speaking`);
           break;
 
         case 'input_audio_buffer.speech_stopped':
-          console.log(`[${this.callSid}] User stopped speaking`);
+          this.latencyMetrics.speechStopTime = Date.now();
+          const speechDuration = this.latencyMetrics.speechStartTime 
+            ? this.latencyMetrics.speechStopTime - this.latencyMetrics.speechStartTime 
+            : 0;
+          console.log(`[${this.callSid}] 🎤 User stopped speaking (duration: ${speechDuration}ms)`);
           break;
 
         case 'input_audio_buffer.committed':
-          console.log(`[${this.callSid}] Audio buffer committed`);
+          const commitLatency = this.latencyMetrics.speechStopTime
+            ? Date.now() - this.latencyMetrics.speechStopTime
+            : 0;
+          console.log(`[${this.callSid}] 📦 Audio buffer committed (${commitLatency}ms after speech stopped)`);
           // Trigger response generation
-          console.log(`[${this.callSid}] Requesting OpenAI response...`);
+          this.latencyMetrics.responseRequestTime = Date.now();
+          console.log(`[${this.callSid}] 🔄 Requesting OpenAI response...`);
           this.sendToOpenAI({
             type: 'response.create'
           });
@@ -281,7 +302,12 @@ class OpenAIRealtimeSession {
           break;
 
         case 'response.created':
-          console.log(`[${this.callSid}] Response created:`, message.response.id);
+          this.latencyMetrics.responseCreatedTime = Date.now();
+          const responseCreationLatency = this.latencyMetrics.responseRequestTime
+            ? this.latencyMetrics.responseCreatedTime - this.latencyMetrics.responseRequestTime
+            : 0;
+          console.log(`[${this.callSid}] 🤖 Response created:`, message.response.id);
+          console.log(`[${this.callSid}]    ⏱️  Response creation latency: ${responseCreationLatency}ms`);
           break;
 
         case 'response.output_item.added':
@@ -314,7 +340,23 @@ class OpenAIRealtimeSession {
         case 'response.audio.delta':
           // OpenAI is sending audio response - this is the audio that plays back to user
           if (message.delta) {
-            console.log(`[${this.callSid}] ✓ Received audio delta (${message.delta.length} bytes) - Sending to caller...`);
+            // Track first audio chunk latency
+            if (!this.latencyMetrics.firstAudioChunkTime) {
+              this.latencyMetrics.firstAudioChunkTime = Date.now();
+              
+              const totalLatency = this.latencyMetrics.speechStopTime
+                ? this.latencyMetrics.firstAudioChunkTime - this.latencyMetrics.speechStopTime
+                : 0;
+              
+              const processingLatency = this.latencyMetrics.responseRequestTime
+                ? this.latencyMetrics.firstAudioChunkTime - this.latencyMetrics.responseRequestTime
+                : 0;
+              
+              console.log(`[${this.callSid}] 🎵 First audio chunk received`);
+              console.log(`[${this.callSid}]    ⏱️  Total latency (speech stop → first audio): ${totalLatency}ms`);
+              console.log(`[${this.callSid}]    ⏱️  Processing latency (request → first audio): ${processingLatency}ms`);
+            }
+            
             this.sendToTwilio(message.delta);
           } else {
             console.warn(`[${this.callSid}] ✗ Audio delta received but no data`);
@@ -322,11 +364,49 @@ class OpenAIRealtimeSession {
           break;
         
         case 'response.audio.done':
-          console.log(`[${this.callSid}] ✓ Audio streaming completed - User should have heard the AI speaking`);
+          this.latencyMetrics.audioCompleteTime = Date.now();
+          const audioStreamDuration = this.latencyMetrics.firstAudioChunkTime
+            ? this.latencyMetrics.audioCompleteTime - this.latencyMetrics.firstAudioChunkTime
+            : 0;
+          console.log(`[${this.callSid}] ✅ Audio streaming completed`);
+          console.log(`[${this.callSid}]    ⏱️  Audio streaming duration: ${audioStreamDuration}ms`);
           break;
 
         case 'response.done':
+          this.latencyMetrics.responseDoneTime = Date.now();
           const response = message.response;
+          
+          console.log(`[${this.callSid}] 🎉 Response completed!`);
+          
+          // Calculate and log all latency metrics
+          if (this.latencyMetrics.speechStopTime && this.latencyMetrics.responseDoneTime) {
+            const totalTurnLatency = this.latencyMetrics.responseDoneTime - this.latencyMetrics.speechStopTime;
+            console.log(`[${this.callSid}] ⏱️  === LATENCY SUMMARY ===`);
+            console.log(`[${this.callSid}]    Total turn-around time: ${totalTurnLatency}ms`);
+            
+            if (this.latencyMetrics.responseRequestTime) {
+              const bufferCommitTime = this.latencyMetrics.responseRequestTime - this.latencyMetrics.speechStopTime;
+              console.log(`[${this.callSid}]    Speech → Buffer commit: ${bufferCommitTime}ms`);
+            }
+            
+            if (this.latencyMetrics.responseCreatedTime && this.latencyMetrics.responseRequestTime) {
+              const responseCreationTime = this.latencyMetrics.responseCreatedTime - this.latencyMetrics.responseRequestTime;
+              console.log(`[${this.callSid}]    Response creation: ${responseCreationTime}ms`);
+            }
+            
+            if (this.latencyMetrics.firstAudioChunkTime && this.latencyMetrics.responseCreatedTime) {
+              const timeToFirstAudio = this.latencyMetrics.firstAudioChunkTime - this.latencyMetrics.responseCreatedTime;
+              console.log(`[${this.callSid}]    Time to first audio: ${timeToFirstAudio}ms`);
+            }
+            
+            if (this.latencyMetrics.audioCompleteTime && this.latencyMetrics.firstAudioChunkTime) {
+              const audioStreamTime = this.latencyMetrics.audioCompleteTime - this.latencyMetrics.firstAudioChunkTime;
+              console.log(`[${this.callSid}]    Audio streaming: ${audioStreamTime}ms`);
+            }
+            
+            console.log(`[${this.callSid}] ⏱️  =====================`);
+          }
+          
           // Extract transcript from response
           if (response.output && response.output.length > 0) {
             const firstOutput = response.output[0];
@@ -343,6 +423,9 @@ class OpenAIRealtimeSession {
             console.log(`[${this.callSid}]   💰 Tokens: ${response.usage.total_tokens} (in: ${response.usage.input_tokens}, out: ${response.usage.output_tokens})`);
             console.log(`[${this.callSid}]   🎵 Audio tokens sent to user: ${response.usage.output_token_details?.audio_tokens || 0}`);
           }
+          
+          // Reset metrics for next turn
+          this.resetLatencyMetrics();
           break;
 
         case 'error':
@@ -374,6 +457,21 @@ class OpenAIRealtimeSession {
     } catch (error) {
       console.error(`[${this.callSid}] Error parsing OpenAI message:`, error);
     }
+  }
+
+  /**
+   * Reset latency metrics for next conversation turn
+   */
+  resetLatencyMetrics() {
+    this.latencyMetrics = {
+      speechStartTime: null,
+      speechStopTime: null,
+      responseRequestTime: null,
+      responseCreatedTime: null,
+      firstAudioChunkTime: null,
+      audioCompleteTime: null,
+      responseDoneTime: null
+    };
   }
 
   /**
