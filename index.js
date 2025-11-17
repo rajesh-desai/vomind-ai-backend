@@ -27,7 +27,6 @@ const publicUrl = process.env.PUBLIC_URL || 'http://localhost:3000';
 // Supabase configuration
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Initialize Twilio client
 const client = twilio(accountSid, authToken);
@@ -162,104 +161,52 @@ app.post('/call-events', async (req, res) => {
     RecordingUrl,
     RecordingSid
   } = req.body;
-
-  // Log comprehensive call event data
-  console.log('=== Outgoing Call Event ===');
-  console.log(`Call SID: ${CallSid}`);
-  console.log(`Status: ${CallStatus}`);
-  console.log(`Direction: ${Direction}`);
-  console.log(`From: ${From}`);
-  console.log(`To: ${To}`);
-  console.log(`Timestamp: ${Timestamp}`);
-  console.log(`Recording SID: ${RecordingSid}`);
-  console.log(`Recording URL: ${RecordingUrl}`);
-  console.log('===========================');
   
-  if (Duration) {
-    console.log(`Duration: ${Duration} seconds`);
-  }
-  
-  if (CallDuration) {
-    console.log(`Total Call Duration: ${CallDuration} seconds`);
-  }
-
-  if (RecordingUrl) {
-    console.log(`Recording URL: ${RecordingUrl}`);
-  }
-
   // Save call event to Supabase database
   try {
-    // Check if call_sid already exists
-    const { data: existingCall, error: fetchError } = await supabase
-      .from('call_events')
-      .select('*')
-      .eq('call_sid', CallSid)
-      .single();
+  const { data, error } = await supabase
+    .from('call_events')
+    .upsert({
+      call_sid: CallSid,
+      call_status: CallStatus,
+      direction: Direction,
+      from_number: From,
+      to_number: To,
+      duration: Duration,
+      call_duration: CallDuration,
+      recording_url: RecordingUrl,
+      recording_sid: RecordingSid,
+      timestamp: new Date(Timestamp)
+    }, 
+    { 
+      onConflict: 'call_sid',
+      ignoreDuplicates: false 
+    })
+    .select();
 
-    if (fetchError && fetchError.code !== 'PGRST116') {
-      // PGRST116 means no rows found, which is fine
-      console.error('Error fetching from Supabase:', fetchError);
-    }
-
-    let result;
-    if (existingCall) {
-      // Update existing row
-      result = await supabase
-        .from('call_events')
-        .update({
-          call_status: CallStatus,
-          direction: Direction || existingCall.direction,
-          duration: Duration ? parseInt(Duration) : existingCall.duration,
-          call_duration: CallDuration ? parseInt(CallDuration) : existingCall.call_duration,
-          recording_url: RecordingUrl || existingCall.recording_url,
-          recording_sid: RecordingSid || existingCall.recording_sid,
-          timestamp: Timestamp || existingCall.timestamp,
-          updated_at: new Date().toISOString()
-        })
-        .eq('call_sid', CallSid);
-
-      if (result.error) {
-        console.error('Error updating Supabase:', result.error);
-      } else {
-        console.log(`Call event updated in database for CallSid: ${CallSid}`);
-      }
-    } else {
-      // Insert new row
-      result = await supabase
-        .from('call_events')
-        .insert([
-          {
-            call_sid: CallSid,
-            call_status: CallStatus,
-            direction: Direction || 'outbound-api',
-            from_number: From,
-            to_number: To,
-            duration: Duration ? parseInt(Duration) : null,
-            call_duration: CallDuration ? parseInt(CallDuration) : null,
-            recording_url: RecordingUrl || null,
-            recording_sid: RecordingSid || null,
-            timestamp: Timestamp || new Date().toISOString(),
-            created_at: new Date().toISOString()
-          }
-        ]);
-
-      if (result.error) {
-        console.error('Error inserting to Supabase:', result.error);
-      } else {
-        console.log(`Call event created in database for CallSid: ${CallSid}`);
-      }
-    }
-  } catch (error) {
-    console.error('Exception saving to Supabase:', error);
+  if (error) {
+    throw error;
   }
 
-  // Respond to acknowledge receipt
-  res.status(200).json({
-    success: true,
-    message: 'Call event received',
-    callSid: CallSid,
-    status: CallStatus
-  });
+    // Respond to acknowledge receipt
+    res.status(200).json({
+      success: true,
+      message: 'Call event received and saved',
+      callSid: CallSid,
+      status: CallStatus,
+      dbOperation: 'created'
+    });
+    
+  } catch (error) {
+    // Still respond 200 to Twilio to prevent retries
+    res.status(200).json({
+      success: false,
+      message: 'Call event received but database save failed',
+      error: error.message,
+      callSid: CallSid,
+      status: CallStatus
+    });
+  }
 });
 
 // Endpoint to start media stream
