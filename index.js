@@ -450,6 +450,91 @@ app.get('/conversation/:callSid', (req, res) => {
   });
 });
 
+// Endpoint to get conversation transcripts from database
+app.get('/transcripts/:callSid', async (req, res) => {
+  const { callSid } = req.params;
+  
+  if (!supabase) {
+    return res.status(503).json({
+      error: 'Database not configured',
+      callSid
+    });
+  }
+  
+  try {
+    const { data, error } = await supabase
+      .from('conversation_transcripts')
+      .select('*')
+      .eq('call_sid', callSid)
+      .order('timestamp', { ascending: true });
+    
+    if (error) {
+      console.error('Error fetching transcripts:', error);
+      return res.status(500).json({
+        error: 'Failed to fetch transcripts',
+        details: error.message,
+        callSid
+      });
+    }
+    
+    res.json({
+      callSid,
+      transcripts: data,
+      messageCount: data.length,
+      success: true
+    });
+  } catch (error) {
+    console.error('Exception fetching transcripts:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message,
+      callSid
+    });
+  }
+});
+
+// Endpoint to get all transcripts with pagination
+app.get('/transcripts', async (req, res) => {
+  const { limit = 100, offset = 0 } = req.query;
+  
+  if (!supabase) {
+    return res.status(503).json({
+      error: 'Database not configured'
+    });
+  }
+  
+  try {
+    const { data, error, count } = await supabase
+      .from('conversation_transcripts')
+      .select('*', { count: 'exact' })
+      .order('timestamp', { ascending: false })
+      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
+    
+    if (error) {
+      console.error('Error fetching transcripts:', error);
+      return res.status(500).json({
+        error: 'Failed to fetch transcripts',
+        details: error.message
+      });
+    }
+    
+    res.json({
+      transcripts: data,
+      count: data.length,
+      total: count,
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      success: true
+    });
+  } catch (error) {
+    console.error('Exception fetching transcripts:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
 // Start the server
 server.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);

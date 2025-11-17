@@ -4,6 +4,7 @@
  */
 
 const WebSocket = require('ws');
+const { createClient } = require('@supabase/supabase-js');
 
 class OpenAIRealtimeSession {
   constructor(callSid, streamSid) {
@@ -31,6 +32,17 @@ class OpenAIRealtimeSession {
       responseDoneTime: null
     };
     this.currentTurnMetrics = {};
+    
+    // Initialize Supabase for transcript logging
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_ANON_KEY;
+    this.supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
+    
+    if (this.supabase) {
+      console.log(`[${this.callSid}] 💾 Supabase transcript logging enabled`);
+    } else {
+      console.warn(`[${this.callSid}] ⚠️  Supabase not configured - transcripts won't be saved to database`);
+    }
     
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
     if (!OPENAI_API_KEY) {
@@ -248,7 +260,7 @@ class OpenAIRealtimeSession {
   /**
    * Handle messages from OpenAI
    */
-  handleOpenAIMessage(data) {
+  async handleOpenAIMessage(data) {
     try {
       const message = JSON.parse(data.toString());
       
@@ -293,12 +305,15 @@ class OpenAIRealtimeSession {
 
         case 'conversation.item.input_audio_transcription.completed':
           const transcript = message.transcript;
-          console.log(`[${this.callSid}] User said: "${transcript}"`);
+          console.log(`[${this.callSid}] 👤 User said: "${transcript}"`);
           this.conversationHistory.push({
             role: 'user',
             content: transcript,
             timestamp: new Date().toISOString()
           });
+          
+          // Save user transcript to database
+          await this.saveTranscriptToDatabase('user', transcript, message.item_id);
           break;
 
         case 'response.created':
@@ -329,12 +344,15 @@ class OpenAIRealtimeSession {
 
         case 'response.audio_transcript.done':
           const aiTranscript = message.transcript;
-          console.log(`\n[${this.callSid}] AI said: "${aiTranscript}"`);
+          console.log(`\n[${this.callSid}] 🤖 AI said: "${aiTranscript}"`);
           this.conversationHistory.push({
             role: 'assistant',
             content: aiTranscript,
             timestamp: new Date().toISOString()
           });
+          
+          // Save AI transcript to database
+          await this.saveTranscriptToDatabase('assistant', aiTranscript, message.item_id);
           break;
 
         case 'response.audio.delta':
@@ -456,6 +474,60 @@ class OpenAIRealtimeSession {
       }
     } catch (error) {
       console.error(`[${this.callSid}] Error parsing OpenAI message:`, error);
+    }
+  }
+
+  /**
+   * Save transcript to Supabase database
+   */
+  async saveTranscriptToDatabase(role, content, messageId = null) {
+    if (!this.supabase) {
+      return; // Skip if Supabase not configured
+    }
+
+    try {
+      // First, ensure call_events record exists
+      const { data: existingCall } = await this.supabase
+        .from('call_events')
+        .select('call_sid')
+        .eq('call_sid', this.callSid)
+        .maybeSingle();
+
+      // If call doesn't exist in call_events, create a basic record
+      if (!existingCall) {
+        console.log(`[${this.callSid}] 📝 Creating call_events record for transcript logging...`);
+        await this.supabase
+          .from('call_events')
+          .insert([{
+            call_sid: this.callSid,
+            call_status: 'in-progress',
+            direction: 'inbound',
+            created_at: new Date().toISOString()
+          }])
+          .select();
+      }
+
+      // Now save the transcript
+      const transcriptData = {
+        call_sid: this.callSid,
+        message_id: messageId,
+        role: role,
+        content: content,
+        timestamp: new Date().toISOString()
+      };
+
+      const { data, error } = await this.supabase
+        .from('conversation_transcripts')
+        .insert([transcriptData])
+        .select();
+
+      if (error) {
+        console.error(`[${this.callSid}] ❌ Error saving transcript to database:`, error);
+      } else {
+        console.log(`[${this.callSid}] 💾 Transcript saved: ${role} - "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"}`);
+      }
+    } catch (error) {
+      console.error(`[${this.callSid}] ❌ Exception saving transcript:`, error.message);
     }
   }
 
