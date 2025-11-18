@@ -27,6 +27,7 @@ const publicUrl = process.env.PUBLIC_URL || 'http://localhost:3000';
 // Supabase configuration
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
+this.supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
 // Initialize Twilio client
 const client = twilio(accountSid, authToken);
@@ -164,7 +165,7 @@ app.post('/call-events', async (req, res) => {
   
   // Save call event to Supabase database
   try {
-  const { data, error } = await supabase
+  const { data, error } = await this.supabase
     .from('call_events')
     .upsert({
       call_sid: CallSid,
@@ -251,6 +252,134 @@ app.post('/start-media-stream', async (req, res) => {
   }
 });
 
+// POST endpoint to retrieve call events with pagination, sorting, and search
+app.post('/agentCallLogs', async (req, res) => {
+  const params = req.body && Object.keys(req.body).length > 0 ? req.body : req.query;
+  const {
+    limit = 50,
+    offset = 0,
+    sortBy = 'created_at',
+    sortOrder = 'desc',
+    status,
+    direction,
+    search,
+    from,
+    to,
+    dateFrom,
+    dateTo
+  } = params;
+
+  if (!this.supabase) {
+    return res.status(503).json({
+      success: false,
+      error: 'Database not configured'
+    });
+  }
+
+  try {
+    // Build the query
+    let query = this.supabase
+      .from('call_events')
+      .select('*', { count: 'exact' });
+
+    // Apply filters
+    if (status) {
+      query = query.eq('call_status', status);
+    }
+
+    if (direction) {
+      query = query.eq('direction', direction);
+    }
+
+    if (from) {
+      query = query.eq('from_number', from);
+    }
+
+    if (to) {
+      query = query.eq('to_number', to);
+    }
+
+    // Search across multiple fields
+    if (search) {
+      query = query.or(`call_sid.ilike.%${search}%,from_number.ilike.%${search}%,to_number.ilike.%${search}%`);
+    }
+
+    // Date range filtering
+    if (dateFrom) {
+      query = query.gte('created_at', dateFrom);
+    }
+
+    if (dateTo) {
+      query = query.lte('created_at', dateTo);
+    }
+
+    // Sorting
+    const validSortFields = ['created_at', 'updated_at', 'call_status', 'duration', 'call_duration', 'timestamp'];
+    const validSortOrders = ['asc', 'desc'];
+    
+    const finalSortBy = validSortFields.includes(sortBy) ? sortBy : 'created_at';
+    const finalSortOrder = validSortOrders.includes(sortOrder.toLowerCase()) ? sortOrder.toLowerCase() : 'desc';
+    
+    query = query.order(finalSortBy, { ascending: finalSortOrder === 'asc' });
+
+    // Pagination
+    const limitNum = Math.min(parseInt(limit), 100); // Max 100 per request
+    const offsetNum = parseInt(offset);
+    query = query.range(offsetNum, offsetNum + limitNum - 1);
+
+    // Execute query
+    const { data, error, count } = await query;
+    if (error) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch call events',
+        details: error.message
+      });
+    }
+
+    // Calculate pagination info
+    const totalPages = Math.ceil(count / limitNum);
+    const currentPage = Math.floor(offsetNum / limitNum) + 1;
+    const hasNextPage = offsetNum + limitNum < count;
+    const hasPrevPage = offsetNum > 0;
+
+    res.json({
+      success: true,
+      data: data,
+      pagination: {
+        total: count,
+        count: data.length,
+        limit: limitNum,
+        offset: offsetNum,
+        currentPage: currentPage,
+        totalPages: totalPages,
+        hasNextPage: hasNextPage,
+        hasPrevPage: hasPrevPage
+      },
+      filters: {
+        status,
+        direction,
+        search,
+        from,
+        to,
+        dateFrom,
+        dateTo
+      },
+      sorting: {
+        sortBy: finalSortBy,
+        sortOrder: finalSortOrder
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+
 // TwiML endpoint for media stream (supports both GET and POST)
 const handleMediaStreamTwiml = (req, res) => {
   try {
@@ -266,8 +395,6 @@ const handleMediaStreamTwiml = (req, res) => {
   
     
     const twimlResponse = twiml.toString();
-    console.log('TwiML Response:', twimlResponse);
-    console.log('=====================================');
     
     res.type('text/xml');
     res.send(twimlResponse);
@@ -454,7 +581,7 @@ app.get('/conversation/:callSid', (req, res) => {
 app.get('/transcripts/:callSid', async (req, res) => {
   const { callSid } = req.params;
   
-  if (!supabase) {
+  if (!this.supabase) {
     return res.status(503).json({
       error: 'Database not configured',
       callSid
@@ -462,7 +589,7 @@ app.get('/transcripts/:callSid', async (req, res) => {
   }
   
   try {
-    const { data, error } = await supabase
+    const { data, error } = await this.supabase
       .from('conversation_transcripts')
       .select('*')
       .eq('call_sid', callSid)
@@ -497,14 +624,14 @@ app.get('/transcripts/:callSid', async (req, res) => {
 app.get('/transcripts', async (req, res) => {
   const { limit = 100, offset = 0 } = req.query;
   
-  if (!supabase) {
+  if (!this.supabase) {
     return res.status(503).json({
       error: 'Database not configured'
     });
   }
   
   try {
-    const { data, error, count } = await supabase
+    const { data, error, count } = await this.supabase
       .from('conversation_transcripts')
       .select('*', { count: 'exact' })
       .order('timestamp', { ascending: false })
