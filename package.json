@@ -19,9 +19,11 @@
   "description": "A Node.js application using Express and Twilio Programmable Voice API for handling voice calls",
   "dependencies": {
     "@supabase/supabase-js": "^2.81.1",
+    "bullmq": "^5.63.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
+    "ioredis": "^5.8.2",
     "openai": "^6.9.0",
     "twilio": "^5.10.5",
     "ws": "^8.18.3"

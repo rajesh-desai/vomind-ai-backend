@@ -8,6 +8,24 @@ const { createClient } = require('@supabase/supabase-js');
 const { validatePhoneNumber } = require('./utils/phoneValidator');
 const OpenAIRealtimeSession = require('./utils/openAIRealtime');
 const { initializeModels } = require('./models');
+const {
+  scheduleImmediateCall,
+  scheduleDelayedCall,
+  scheduleRecurringCall,
+  scheduleBulkCalls,
+  getJobStatus,
+  cancelCall,
+  retryCall,
+  getQueueStats,
+  getWaitingJobs,
+  getActiveJobs,
+  getFailedJobs,
+  cleanOldJobs,
+  pauseQueue,
+  resumeQueue,
+  closeQueue
+} = require('./queues/callQueue');
+const { createCallWorker, closeWorker } = require('./queues/callWorker');
 
 const app = express();
 const server = http.createServer(app);
@@ -56,6 +74,16 @@ const models = this.supabase ? initializeModels(this.supabase) : null;
 
 // Initialize Twilio client
 const client = twilio(accountSid, authToken);
+
+// Initialize call queue worker
+let callWorker = null;
+try {
+  callWorker = createCallWorker(models);
+  console.log('📞 Call queue worker initialized');
+} catch (error) {
+  console.warn('⚠️  Call queue worker not initialized:', error.message);
+  console.warn('⚠️  Make sure Redis is running for queue functionality');
+}
 
 // Root endpoint
 app.get('/', (req, res) => {
@@ -417,6 +445,367 @@ app.post('/call-status', (req, res) => {
   
   res.sendStatus(200);
 });
+
+// ============================================
+// QUEUE MANAGEMENT ENDPOINTS
+// ============================================
+
+// Schedule an immediate outbound call
+app.post('/api/queue/schedule-call', async (req, res) => {
+  const { to, message, lead_id, priority, metadata } = req.body;
+
+  if (!to) {
+    return res.status(400).json({
+      success: false,
+      error: 'Phone number is required'
+    });
+  }
+
+  try {
+    const result = await scheduleImmediateCall({
+      to,
+      message: message || 'Hello from VoMindAI',
+      lead_id,
+      priority: priority || 'normal',
+      metadata: metadata || {}
+    });
+
+    res.json({
+      success: true,
+      message: 'Call scheduled successfully',
+      ...result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to schedule call',
+      message: error.message
+    });
+  }
+});
+
+// Schedule a delayed outbound call
+app.post('/api/queue/schedule-delayed-call', async (req, res) => {
+  const { to, message, lead_id, priority, metadata, scheduleAt, delayMs } = req.body;
+
+  if (!to) {
+    return res.status(400).json({
+      success: false,
+      error: 'Phone number is required'
+    });
+  }
+
+  if (!scheduleAt && !delayMs) {
+    return res.status(400).json({
+      success: false,
+      error: 'Either scheduleAt (ISO date) or delayMs (milliseconds) is required'
+    });
+  }
+
+  try {
+    const delay = scheduleAt ? new Date(scheduleAt) : parseInt(delayMs);
+    
+    const result = await scheduleDelayedCall({
+      to,
+      message: message || 'Hello from VoMindAI',
+      lead_id,
+      priority: priority || 'normal',
+      metadata: metadata || {}
+    }, delay);
+
+    res.json({
+      success: true,
+      message: 'Delayed call scheduled successfully',
+      ...result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to schedule delayed call',
+      message: error.message
+    });
+  }
+});
+
+// Schedule a recurring call
+app.post('/api/queue/schedule-recurring-call', async (req, res) => {
+  const { to, message, lead_id, priority, metadata, cronExpression } = req.body;
+
+  if (!to || !cronExpression) {
+    return res.status(400).json({
+      success: false,
+      error: 'Phone number and cron expression are required'
+    });
+  }
+
+  try {
+    const result = await scheduleRecurringCall({
+      to,
+      message: message || 'Hello from VoMindAI',
+      lead_id,
+      priority: priority || 'normal',
+      metadata: metadata || {}
+    }, cronExpression);
+
+    res.json({
+      success: true,
+      message: 'Recurring call scheduled successfully',
+      ...result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to schedule recurring call',
+      message: error.message
+    });
+  }
+});
+
+// Schedule bulk calls
+app.post('/api/queue/schedule-bulk-calls', async (req, res) => {
+  const { calls } = req.body;
+
+  if (!calls || !Array.isArray(calls) || calls.length === 0) {
+    return res.status(400).json({
+      success: false,
+      error: 'Calls array is required and must not be empty'
+    });
+  }
+
+  try {
+    const results = await scheduleBulkCalls(calls);
+
+    res.json({
+      success: true,
+      message: `${results.length} calls scheduled successfully`,
+      jobs: results
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to schedule bulk calls',
+      message: error.message
+    });
+  }
+});
+
+// Get job status
+app.get('/api/queue/job/:jobId', async (req, res) => {
+  const { jobId } = req.params;
+
+  try {
+    const status = await getJobStatus(jobId);
+
+    if (status.error) {
+      return res.status(404).json({
+        success: false,
+        error: status.error
+      });
+    }
+
+    res.json({
+      success: true,
+      ...status
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get job status',
+      message: error.message
+    });
+  }
+});
+
+// Cancel a scheduled call
+app.delete('/api/queue/job/:jobId', async (req, res) => {
+  const { jobId } = req.params;
+
+  try {
+    const cancelled = await cancelCall(jobId);
+
+    if (!cancelled) {
+      return res.status(404).json({
+        success: false,
+        error: 'Job not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Call cancelled successfully',
+      jobId
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to cancel call',
+      message: error.message
+    });
+  }
+});
+
+// Retry a failed call
+app.post('/api/queue/job/:jobId/retry', async (req, res) => {
+  const { jobId } = req.params;
+
+  try {
+    const result = await retryCall(jobId);
+
+    res.json({
+      success: true,
+      message: 'Call retry initiated',
+      ...result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retry call',
+      message: error.message
+    });
+  }
+});
+
+// Get queue statistics
+app.get('/api/queue/stats', async (req, res) => {
+  try {
+    const stats = await getQueueStats();
+
+    res.json({
+      success: true,
+      stats
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get queue stats',
+      message: error.message
+    });
+  }
+});
+
+// Get waiting jobs
+app.get('/api/queue/waiting', async (req, res) => {
+  const { start = 0, end = 10 } = req.query;
+
+  try {
+    const jobs = await getWaitingJobs(parseInt(start), parseInt(end));
+
+    res.json({
+      success: true,
+      count: jobs.length,
+      jobs
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get waiting jobs',
+      message: error.message
+    });
+  }
+});
+
+// Get active jobs
+app.get('/api/queue/active', async (req, res) => {
+  const { start = 0, end = 10 } = req.query;
+
+  try {
+    const jobs = await getActiveJobs(parseInt(start), parseInt(end));
+
+    res.json({
+      success: true,
+      count: jobs.length,
+      jobs
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get active jobs',
+      message: error.message
+    });
+  }
+});
+
+// Get failed jobs
+app.get('/api/queue/failed', async (req, res) => {
+  const { start = 0, end = 10 } = req.query;
+
+  try {
+    const jobs = await getFailedJobs(parseInt(start), parseInt(end));
+
+    res.json({
+      success: true,
+      count: jobs.length,
+      jobs
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get failed jobs',
+      message: error.message
+    });
+  }
+});
+
+// Clean old jobs
+app.post('/api/queue/clean', async (req, res) => {
+  const { grace = 3600000, limit = 1000 } = req.body;
+
+  try {
+    const result = await cleanOldJobs(parseInt(grace), parseInt(limit));
+
+    res.json({
+      success: true,
+      message: 'Old jobs cleaned',
+      ...result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to clean jobs',
+      message: error.message
+    });
+  }
+});
+
+// Pause the queue
+app.post('/api/queue/pause', async (req, res) => {
+  try {
+    await pauseQueue();
+
+    res.json({
+      success: true,
+      message: 'Queue paused'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to pause queue',
+      message: error.message
+    });
+  }
+});
+
+// Resume the queue
+app.post('/api/queue/resume', async (req, res) => {
+  try {
+    await resumeQueue();
+
+    res.json({
+      success: true,
+      message: 'Queue resumed'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to resume queue',
+      message: error.message
+    });
+  }
+});
+
+// ============================================
+// END QUEUE MANAGEMENT ENDPOINTS
+// ============================================
 
 // Call events tracking endpoint for outgoing calls
 app.post('/call-events', async (req, res) => {
@@ -915,3 +1304,39 @@ server.listen(PORT, () => {
     console.warn('⚠️  Twilio cannot reach localhost. Please use ngrok and set PUBLIC_URL in .env');
   }
 });
+
+// Graceful shutdown handling
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
+
+async function gracefulShutdown() {
+  console.log('\n📞 Shutting down gracefully...');
+  
+  try {
+    // Close WebSocket server
+    wss.close(() => {
+      console.log('✅ WebSocket server closed');
+    });
+    
+    // Close HTTP server
+    server.close(() => {
+      console.log('✅ HTTP server closed');
+    });
+    
+    // Close call worker
+    if (callWorker) {
+      await closeWorker(callWorker);
+      console.log('✅ Call worker closed');
+    }
+    
+    // Close queue connections
+    await closeQueue();
+    console.log('✅ Queue connections closed');
+    
+    console.log('👋 Shutdown complete');
+    process.exit(0);
+  } catch (error) {
+    console.error('❌ Error during shutdown:', error);
+    process.exit(1);
+  }
+}
