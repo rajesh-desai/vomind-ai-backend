@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
+const cors = require('cors');
 const twilio = require('twilio');
 const { createClient } = require('@supabase/supabase-js');
 const { validatePhoneNumber } = require('./utils/phoneValidator');
@@ -14,9 +15,29 @@ const wss = new WebSocket.Server({
 });
 const PORT = process.env.PORT || 3000;
 
-// Middleware to parse URL-encoded bodies (for Twilio webhooks)
-app.use(express.urlencoded({ extended: false }));
-app.use(express.json());
+// CORS configuration
+const corsOptions = {
+  origin: process.env.CORS_ORIGIN || '*', // Allow all origins by default, configure in .env
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+
+// Apply CORS middleware
+app.use(cors(corsOptions));
+
+// JSON body parser with increased limit
+app.use(express.json({ limit: '10mb' }));
+
+// URL-encoded body parser (for Twilio webhooks)
+app.use(express.urlencoded({ extended: false, limit: '10mb' }));
+
+// Log incoming requests
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+  next();
+});
 
 // Twilio credentials from environment variables
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
