@@ -1,0 +1,28 @@
+/**
+ * Model Index - Export all ORM models
+ * Provides a centralized way to initialize and access all models
+ */
+
+const Lead = require('./Lead');
+const CallEvent = require('./CallEvent');
+const ConversationTranscript = require('./ConversationTranscript');
+
+/**
+ * Initialize all models with a Supabase client
+ * @param {Object} supabase - Supabase client instance
+ * @returns {Object} Object containing all initialized models
+ */
+function initializeModels(supabase) {
+  return {
+    Lead: new Lead(supabase),
+    CallEvent: new CallEvent(supabase),
+    ConversationTranscript: new ConversationTranscript(supabase)
+  };
+}
+
+module.exports = {
+  Lead,
+  CallEvent,
+  ConversationTranscript,
+  initializeModels
+};

@@ -4,10 +4,9 @@
  */
 
 const WebSocket = require('ws');
-const { createClient } = require('@supabase/supabase-js');
 
 class OpenAIRealtimeSession {
-  constructor(callSid, streamSid) {
+  constructor(callSid, streamSid, models = null) {
     this.callSid = callSid;
     this.streamSid = streamSid;
     this.openAiWs = null;
@@ -33,15 +32,13 @@ class OpenAIRealtimeSession {
     };
     this.currentTurnMetrics = {};
     
-    // Initialize Supabase for transcript logging
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_ANON_KEY;
-    this.supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
+    // Store models for database operations
+    this.models = models;
     
-    if (this.supabase) {
-      console.log(`[${this.callSid}] 💾 Supabase transcript logging enabled`);
+    if (this.models) {
+      console.log(`[${this.callSid}] 💾 Database models enabled for transcript logging`);
     } else {
-      console.warn(`[${this.callSid}] ⚠️  Supabase not configured - transcripts won't be saved to database`);
+      console.warn(`[${this.callSid}] ⚠️  Models not provided - transcripts won't be saved to database`);
     }
     
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;

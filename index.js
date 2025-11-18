@@ -7,6 +7,7 @@ const twilio = require('twilio');
 const { createClient } = require('@supabase/supabase-js');
 const { validatePhoneNumber } = require('./utils/phoneValidator');
 const OpenAIRealtimeSession = require('./utils/openAIRealtime');
+const { initializeModels } = require('./models');
 
 const app = express();
 const server = http.createServer(app);
@@ -49,6 +50,9 @@ const publicUrl = process.env.PUBLIC_URL || 'http://localhost:3000';
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
 this.supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
+
+// Initialize ORM models
+const models = this.supabase ? initializeModels(this.supabase) : null;
 
 // Initialize Twilio client
 const client = twilio(accountSid, authToken);
@@ -132,24 +136,13 @@ app.post('/api/new-lead', async (req, res) => {
       referrer: referrer,
       created_at: new Date().toISOString()
     };
-    // Insert lead into database
-    const { data, error } = await this.supabase
-      .from('leads')
-      .insert([leadData])
-      .select();
-
-    if (error) {
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to create lead',
-        details: error.message
-      });
-    }
+    // Insert lead into database using ORM
+    const lead = await models.Lead.create(leadData);
 
     res.status(201).json({
       success: true,
       message: 'Lead created successfully',
-      data: data[0]
+      data: lead
     });
   } catch (error) {
     res.status(500).json({
@@ -183,77 +176,26 @@ app.get('/api/leads', async (req, res) => {
   }
 
   try {
-    let query = supabase
-      .from('leads')
-      .select('*', { count: 'exact' });
-
-    // Apply filters
-    if (status) {
-      query = query.eq('lead_status', status);
-    }
-
-    if (priority) {
-      query = query.eq('lead_priority', priority);
-    }
-
-    if (source) {
-      query = query.eq('lead_source', source);
-    }
-
-    // Search across multiple fields
-    if (search) {
-      query = query.or(`name.ilike.%${search}%,email.ilike.%${search}%,phone.ilike.%${search}%,company.ilike.%${search}%`);
-    }
-
-    // Date range filtering
-    if (dateFrom) {
-      query = query.gte('created_at', dateFrom);
-    }
-
-    if (dateTo) {
-      query = query.lte('created_at', dateTo);
-    }
-
-    // Sorting
-    const validSortFields = ['created_at', 'updated_at', 'name', 'email', 'lead_status', 'lead_priority'];
-    const finalSortBy = validSortFields.includes(sortBy) ? sortBy : 'created_at';
-    const finalSortOrder = ['asc', 'desc'].includes(sortOrder.toLowerCase()) ? sortOrder.toLowerCase() : 'desc';
-    
-    query = query.order(finalSortBy, { ascending: finalSortOrder === 'asc' });
-
-    // Pagination
-    const limitNum = Math.min(parseInt(limit), 100);
-    const offsetNum = parseInt(offset);
-    query = query.range(offsetNum, offsetNum + limitNum - 1);
-
-    const { data, error, count } = await query;
-
-    if (error) {
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to fetch leads',
-        details: error.message
-      });
-    }
-
-    const totalPages = Math.ceil(count / limitNum);
-    const currentPage = Math.floor(offsetNum / limitNum) + 1;
+    // Use Lead ORM findAll method with filters and pagination
+    const result = await models.Lead.findAll({
+      limit,
+      offset,
+      status,
+      priority,
+      source,
+      search,
+      dateFrom,
+      dateTo,
+      sortBy,
+      sortOrder
+    });
 
     res.json({
       success: true,
-      data: data,
-      pagination: {
-        total: count,
-        count: data.length,
-        limit: limitNum,
-        offset: offsetNum,
-        currentPage: currentPage,
-        totalPages: totalPages,
-        hasNextPage: offsetNum + limitNum < count,
-        hasPrevPage: offsetNum > 0
-      },
+      data: result.data,
+      pagination: result.pagination,
       filters: { status, priority, source, search, dateFrom, dateTo },
-      sorting: { sortBy: finalSortBy, sortOrder: finalSortOrder }
+      sorting: { sortBy, sortOrder }
     });
   } catch (error) {
     res.status(500).json({
@@ -276,30 +218,19 @@ app.get('/api/leads/:id', async (req, res) => {
   }
 
   try {
-    const { data, error } = await supabase
-      .from('leads')
-      .select('*')
-      .eq('id', id)
-      .single();
+    const lead = await models.Lead.findById(id);
 
-    if (error) {
-      if (error.code === 'PGRST116') {
-        return res.status(404).json({
-          success: false,
-          error: 'Lead not found',
-          id: id
-        });
-      }
-      return res.status(500).json({
+    if (!lead) {
+      return res.status(404).json({
         success: false,
-        error: 'Failed to fetch lead',
-        details: error.message
+        error: 'Lead not found',
+        id: id
       });
     }
 
     res.json({
       success: true,
-      data: data
+      data: lead
     });
   } catch (error) {
     res.status(500).json({
@@ -356,21 +287,9 @@ app.put('/api/leads/:id', async (req, res) => {
       });
     }
 
-    const { data, error } = await this.supabase
-      .from('leads')
-      .update(updateData)
-      .eq('id', id)
-      .select();
+    const lead = await models.Lead.update(id, updateData);
 
-    if (error) {
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to update lead',
-        details: error.message
-      });
-    }
-
-    if (!data || data.length === 0) {
+    if (!lead) {
       return res.status(404).json({
         success: false,
         error: 'Lead not found',
@@ -381,7 +300,7 @@ app.put('/api/leads/:id', async (req, res) => {
     res.json({
       success: true,
       message: 'Lead updated successfully',
-      data: data[0]
+      data: lead
     });
   } catch (error) {
     res.status(500).json({
@@ -514,11 +433,9 @@ app.post('/call-events', async (req, res) => {
     RecordingSid
   } = req.body;
   
-  // Save call event to Supabase database
+  // Save call event to database using ORM
   try {
-  const { data, error } = await this.supabase
-    .from('call_events')
-    .upsert({
+    const callEvent = await models.CallEvent.upsert({
       call_sid: CallSid,
       call_status: CallStatus,
       direction: Direction,
@@ -528,17 +445,8 @@ app.post('/call-events', async (req, res) => {
       call_duration: CallDuration,
       recording_url: RecordingUrl,
       recording_sid: RecordingSid,
-      timestamp: new Date(Timestamp)
-    }, 
-    { 
-      onConflict: 'call_sid',
-      ignoreDuplicates: false 
-    })
-    .select();
-
-  if (error) {
-    throw error;
-  }
+      timestamp: Timestamp ? new Date(Timestamp).toISOString() : new Date().toISOString()
+    });
 
     // Respond to acknowledge receipt
     res.status(200).json({
@@ -546,7 +454,7 @@ app.post('/call-events', async (req, res) => {
       message: 'Call event received and saved',
       callSid: CallSid,
       status: CallStatus,
-      dbOperation: 'created'
+      data: callEvent
     });
     
   } catch (error) {
@@ -795,7 +703,8 @@ wss.on('connection', async (ws, req) => {
             try {
               const openAISession = new OpenAIRealtimeSession(
                 sessionData.callSid,
-                sessionData.streamSid
+                sessionData.streamSid,
+                models
               );
               await openAISession.connect();
               openAISession.setTwilioWebSocket(ws);
@@ -940,25 +849,12 @@ app.get('/transcripts/:callSid', async (req, res) => {
   }
   
   try {
-    const { data, error } = await this.supabase
-      .from('conversation_transcripts')
-      .select('*')
-      .eq('call_sid', callSid)
-      .order('timestamp', { ascending: true });
-    
-    if (error) {
-      console.error('Error fetching transcripts:', error);
-      return res.status(500).json({
-        error: 'Failed to fetch transcripts',
-        details: error.message,
-        callSid
-      });
-    }
+    const transcripts = await models.ConversationTranscript.findByCallSid(callSid);
     
     res.json({
       callSid,
-      transcripts: data,
-      messageCount: data.length,
+      transcripts: transcripts,
+      messageCount: transcripts.length,
       success: true
     });
   } catch (error) {
@@ -982,24 +878,17 @@ app.get('/transcripts', async (req, res) => {
   }
   
   try {
-    const { data, error, count } = await this.supabase
-      .from('conversation_transcripts')
-      .select('*', { count: 'exact' })
-      .order('timestamp', { ascending: false })
-      .range(parseInt(offset), parseInt(offset) + parseInt(limit) - 1);
-    
-    if (error) {
-      console.error('Error fetching transcripts:', error);
-      return res.status(500).json({
-        error: 'Failed to fetch transcripts',
-        details: error.message
-      });
-    }
+    const result = await models.ConversationTranscript.findAll({
+      limit,
+      offset,
+      sortBy: 'timestamp',
+      sortOrder: 'desc'
+    });
     
     res.json({
-      transcripts: data,
-      count: data.length,
-      total: count,
+      transcripts: result.data,
+      count: result.pagination.count,
+      total: result.pagination.total,
       limit: parseInt(limit),
       offset: parseInt(offset),
       success: true
