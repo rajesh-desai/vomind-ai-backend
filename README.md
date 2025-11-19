@@ -1,20 +1,43 @@
-# Twilio Programmable Voice with Express
+# VoMindAI - Programmable Voice AI Assistant
 
-A Node.js application using Express framework and Twilio Programmable Voice API to handle voice calls, make outbound calls, and process incoming calls with interactive voice responses.
+A Node.js application using Express framework, Twilio Programmable Voice API, and OpenAI Realtime API to handle intelligent voice calls with AI-powered conversations, lead management, and advanced call queue scheduling.
 
 ## Features
 
-- 🎙️ **Outbound Calls**: Make programmatic calls with custom messages
-- 📞 **Incoming Call Handling**: Handle incoming calls with interactive voice menus
-- 🔊 **TwiML Responses**: Generate dynamic voice responses
-- 📊 **Call Status Tracking**: Monitor call status with callbacks
-- 🔐 **Secure Configuration**: Environment-based credential management
+### Voice & AI
+- 🎙️ **AI-Powered Conversations**: Real-time voice conversations using OpenAI Realtime API
+- 📞 **Outbound & Inbound Calls**: Bidirectional voice communication via Twilio
+- 🔊 **Media Streaming**: WebSocket-based audio streaming for low latency
+- 📝 **Automatic Transcription**: Save conversation transcripts to database
+
+### Queue System
+- ⏰ **Scheduled Calls**: Schedule calls for specific dates/times
+- 🔄 **Recurring Calls**: Set up recurring calls using cron expressions
+- 📦 **Bulk Operations**: Schedule multiple calls at once
+- 🔁 **Automatic Retries**: Configurable retry logic with exponential backoff
+- 📊 **Queue Monitoring**: Real-time statistics and job tracking
+- 🎯 **Priority Management**: High, normal, and low priority queues
+
+### Data Management
+- 💾 **Supabase Integration**: PostgreSQL database for leads, calls, and transcripts
+- 🗂️ **ORM Models**: Clean data access layer for all database operations
+- 📈 **Lead Management**: Complete CRUD operations for lead tracking
+- 🔍 **Advanced Search**: Pagination, filtering, and full-text search
+
+### API & Integration
+- 🌐 **RESTful API**: Comprehensive API for all operations
+- 🔐 **CORS Configured**: Ready for frontend integration
+- 📡 **WebSocket Support**: Real-time bidirectional communication
+- 🛡️ **Error Handling**: Robust error handling and logging
 
 ## Prerequisites
 
 - Node.js (v14 or higher)
+- Redis (for queue system)
 - A Twilio account ([Sign up here](https://www.twilio.com/try-twilio))
 - A Twilio phone number with Voice capabilities
+- OpenAI API key ([Get here](https://platform.openai.com/api-keys))
+- Supabase account ([Sign up here](https://supabase.com))
 
 ## Installation
 
@@ -23,25 +46,52 @@ A Node.js application using Express framework and Twilio Programmable Voice API 
    cd /home/woyce/Desktop/vomind-AI
    ```
 
-2. Install dependencies (already installed):
+2. Install dependencies:
    ```bash
    npm install
    ```
 
-3. Create a `.env` file from the example:
+3. Install and start Redis:
+   ```bash
+   # Ubuntu/Debian
+   sudo apt install redis-server
+   sudo systemctl start redis
+   
+   # macOS
+   brew install redis
+   brew services start redis
+   
+   # Docker
+   docker run -d -p 6379:6379 redis:alpine
+   ```
+
+4. Create a `.env` file from the example:
    ```bash
    cp .env.example .env
    ```
 
-4. Edit `.env` and add your Twilio credentials:
+5. Edit `.env` and add your credentials:
    ```env
+   # Twilio
    TWILIO_ACCOUNT_SID=your_account_sid_here
    TWILIO_AUTH_TOKEN=your_auth_token_here
    TWILIO_PHONE_NUMBER=your_twilio_phone_number_here
+   
+   # OpenAI
+   OPENAI_API_KEY=your_openai_key_here
+   
+   # Supabase
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_ANON_KEY=your_supabase_anon_key_here
+   
+   # Redis (for queue system)
+   REDIS_HOST=localhost
+   REDIS_PORT=6379
+   
+   # Server
    PORT=3000
+   PUBLIC_URL=https://your-ngrok-url.ngrok.io
    ```
-
-   You can find your credentials at: https://console.twilio.com
 
 ## Usage
 
@@ -126,12 +176,128 @@ For production use, you need to expose your local server to the internet using a
 
 ```
 vomind-AI/
-├── index.js           # Main Express server with Twilio integration
-├── package.json       # Project dependencies and scripts
-├── .env              # Environment variables (create from .env.example)
-├── .env.example      # Example environment configuration
-├── .gitignore        # Git ignore rules
-└── README.md         # This file
+├── index.js                      # Main Express server
+├── models/                       # ORM models
+│   ├── Lead.js                  # Lead model
+│   ├── CallEvent.js             # Call event model
+│   ├── ConversationTranscript.js # Transcript model
+│   └── index.js                 # Model exports
+├── queues/                       # Queue system
+│   ├── callQueue.js             # BullMQ queue configuration
+│   └── callWorker.js            # Queue worker
+├── utils/                        # Utility functions
+│   ├── openAIRealtime.js        # OpenAI integration
+│   └── phoneValidator.js        # Phone validation
+├── examples/                     # Usage examples
+│   └── queueExamples.js         # Queue system examples
+├── supabase/                     # Database schemas
+├── package.json                  # Dependencies
+├── .env                         # Environment variables
+├── README.md                    # Main documentation
+├── QUEUE_SYSTEM.md              # Queue system docs
+└── QUEUE_QUICKSTART.md          # Quick start guide
+```
+
+## Quick Start
+
+### 1. Basic Setup
+```bash
+npm install
+cp .env.example .env
+# Edit .env with your credentials
+npm start
+```
+
+### 2. Queue System Setup
+See [QUEUE_QUICKSTART.md](./QUEUE_QUICKSTART.md) for detailed instructions.
+
+```bash
+# Install and start Redis
+sudo apt install redis-server  # Ubuntu
+brew install redis             # macOS
+
+# Verify Redis
+redis-cli ping  # Should return PONG
+
+# Start server (worker starts automatically)
+npm start
+```
+
+## API Documentation
+
+### Queue System Endpoints
+
+For complete queue API documentation, see [QUEUE_SYSTEM.md](./QUEUE_SYSTEM.md)
+
+**Key Endpoints:**
+- `POST /api/queue/schedule-call` - Schedule immediate call
+- `POST /api/queue/schedule-delayed-call` - Schedule future call
+- `POST /api/queue/schedule-recurring-call` - Schedule recurring call
+- `POST /api/queue/schedule-bulk-calls` - Schedule multiple calls
+- `GET /api/queue/stats` - Queue statistics
+- `GET /api/queue/job/:jobId` - Check job status
+- `DELETE /api/queue/job/:jobId` - Cancel scheduled call
+
+### Lead Management
+- `POST /api/new-lead` - Create new lead
+- `GET /api/leads` - Get all leads (with pagination/filtering)
+- `GET /api/leads/:id` - Get single lead
+- `PUT /api/leads/:id` - Update lead
+
+### Call Management
+- `POST /make-call` - Make immediate call
+- `POST /start-media-stream` - Start AI conversation
+- `POST /call-events` - Twilio webhook for call events
+- `POST /agentCallLogs` - Search call logs
+
+### Transcripts
+- `GET /transcripts/:callSid` - Get call transcripts
+- `GET /transcripts` - Get all transcripts
+
+## Usage Examples
+
+### Schedule a Call
+
+```bash
+curl -X POST http://localhost:3000/api/queue/schedule-call \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "+1234567890",
+    "message": "Hello from VoMindAI",
+    "priority": "high",
+    "lead_id": "123"
+  }'
+```
+
+### Schedule Delayed Call
+
+```bash
+curl -X POST http://localhost:3000/api/queue/schedule-delayed-call \
+  -H "Content-Type: application/json" \
+  -d '{
+    "to": "+1234567890",
+    "message": "Scheduled call",
+    "scheduleAt": "2025-11-20T14:00:00Z"
+  }'
+```
+
+### Check Queue Statistics
+
+```bash
+curl http://localhost:3000/api/queue/stats
+```
+
+### Create a Lead
+
+```bash
+curl -X POST http://localhost:3000/api/new-lead \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "John Doe",
+    "email": "john@example.com",
+    "phone": "+1234567890",
+    "company": "Acme Inc"
+  }'
 ```
 
 ## Available Scripts
