@@ -901,7 +901,7 @@ app.post('/start-media-stream', async (req, res) => {
 });
 
 // POST endpoint to retrieve call events with pagination, sorting, and search
-app.post('/agentCallLogs', async (req, res) => {
+app.post('/api/agentCallLogs', async (req, res) => {
   const params = req.body && Object.keys(req.body).length > 0 ? req.body : req.query;
   const {
     limit = 50,
@@ -1210,7 +1210,7 @@ app.get('/active-streams', (req, res) => {
 app.get('/conversation/:callSid', (req, res) => {
   const { callSid } = req.params;
   const openAISession = openAISessions.get(callSid);
-  
+  console.log(`[${callSid}] Fetching conversation history`);
   if (!openAISession) {
     return res.status(404).json({
       error: 'Call not found or session ended',
@@ -1227,7 +1227,7 @@ app.get('/conversation/:callSid', (req, res) => {
 });
 
 // Endpoint to get conversation transcripts from database
-app.get('/transcripts/:callSid', async (req, res) => {
+app.get('/api/transcripts/:callSid', async (req, res) => {
   const { callSid } = req.params;
   
   if (!this.supabase) {

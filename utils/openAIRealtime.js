@@ -35,6 +35,11 @@ class OpenAIRealtimeSession {
     // Store models for database operations
     this.models = models;
     
+    // Extract supabase client from models if available
+    if (this.models && this.models.Lead && this.models.Lead.supabase) {
+      this.supabase = this.models.Lead.supabase;
+    }
+    
     if (this.models) {
       console.log(`[${this.callSid}] 💾 Database models enabled for transcript logging`);
     } else {
@@ -522,6 +527,44 @@ class OpenAIRealtimeSession {
         console.error(`[${this.callSid}] ❌ Error saving transcript to database:`, error);
       } else {
         console.log(`[${this.callSid}] 💾 Transcript saved: ${role} - "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"}`);
+      }
+
+      // Try to update lead with call_sid if models are available
+      if (this.models && this.models.Lead) {
+        try {
+          // Find lead by call_sid first (may already be linked)
+          const existingLead = await this.models.Lead.findByCallSid(this.callSid);
+          if (existingLead) {
+            console.log(`[${this.callSid}] ✅ Lead ${existingLead.id} already has call_sid set`);
+            return; // Already linked, no need to update
+          }
+
+          // Try to find lead by matching recent call from call_events
+          const { data: callEvent } = await this.supabase
+            .from('call_events')
+            .select('to_number, from_number')
+            .eq('call_sid', this.callSid)
+            .maybeSingle();
+
+          if (callEvent && callEvent.to_number) {
+            // Try to find lead with matching phone number (most recent)
+            const recentLeads = await this.models.Lead.findAll({
+              search: callEvent.to_number,
+              limit: 1,
+              sortBy: 'created_at',
+              sortOrder: 'desc'
+            });
+
+            if (recentLeads.data && recentLeads.data.length > 0) {
+              const lead = recentLeads.data[0];
+              await this.models.Lead.updateCallSid(lead.id, this.callSid);
+              console.log(`[${this.callSid}] ✅ Updated lead ${lead.id} with call_sid`);
+            }
+          }
+        } catch (modelError) {
+          console.warn(`[${this.callSid}] ⚠️  Could not update lead with call_sid:`, modelError.message);
+          // Don't fail the transcript save due to lead update errors
+        }
       }
     } catch (error) {
       console.error(`[${this.callSid}] ❌ Exception saving transcript:`, error.message);

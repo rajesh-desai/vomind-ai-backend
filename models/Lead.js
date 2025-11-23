@@ -147,8 +147,10 @@ class Lead {
     // Pagination
     const limitNum = Math.min(parseInt(limit), 100);
     const offsetNum = parseInt(offset);
-    query = query.range(offsetNum, offsetNum + limitNum - 1);
 
+    console.log('Applying pagination:', { limitNum, offsetNum });
+    query = query.range(offsetNum, offsetNum + limitNum - 1);
+    console.log('Query after pagination applied:', query);
     const { data, error, count } = await query;
 
     if (error) throw error;
@@ -208,6 +210,34 @@ class Lead {
       last_contacted_at: new Date().toISOString(),
       notes: notes
     });
+  }
+
+  /**
+   * Update lead with call_sid from a call
+   * @param {number} id - Lead ID
+   * @param {string} callSid - Twilio call SID
+   * @returns {Promise<Object>} Updated lead data
+   */
+  async updateCallSid(id, callSid) {
+    return this.update(id, {
+      call_sid: callSid
+    });
+  }
+
+  /**
+   * Find lead by call_sid
+   * @param {string} callSid - Twilio call SID
+   * @returns {Promise<Object>} Lead data
+   */
+  async findByCallSid(callSid) {
+    const { data, error } = await this.supabase
+      .from(this.tableName)
+      .select('*')
+      .eq('call_sid', callSid)
+      .maybeSingle();
+
+    if (error) throw error;
+    return data;
   }
 
   /**

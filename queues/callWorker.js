@@ -99,7 +99,14 @@ function createCallWorker(models = null) {
       try {
         // Update lead with call information
         if (result.lead_id) {
-          await models.Lead.markAsContacted(result.lead_id, `Outbound call ${result.callSid} initiated`);
+          // Update lead with call_sid and mark as contacted
+          await models.Lead.update(result.lead_id, {
+            call_sid: result.callSid,
+            lead_status: 'contacted',
+            last_contacted_at: new Date().toISOString(),
+            notes: `Outbound call ${result.callSid} initiated`
+          });
+          console.log(`✅ Updated lead ${result.lead_id} with call_sid ${result.callSid}`);
         }
       } catch (dbError) {
         console.error('Error updating database:', dbError.message);
