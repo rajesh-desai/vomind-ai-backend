@@ -26,6 +26,7 @@ const {
   closeQueue
 } = require('./queues/callQueue');
 const { createCallWorker, closeWorker } = require('./queues/callWorker');
+const { parseFile, validateLeads } = require('./utils/fileParser');
 
 const app = express();
 const server = http.createServer(app);
@@ -51,6 +52,16 @@ app.use(express.json({ limit: '10mb' }));
 
 // URL-encoded body parser (for Twilio webhooks)
 app.use(express.urlencoded({ extended: false, limit: '10mb' }));
+
+// File upload middleware (for CSV/JSON file imports)
+const fileUpload = require('express-fileupload');
+app.use(fileUpload({
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB max file size
+  abortOnLimit: true,
+  responseOnLimit: 'File size exceeds 50MB limit',
+  useTempFiles: false,
+  createParentPath: false
+}));
 
 // Log incoming requests
 app.use((req, res, next) => {
@@ -335,6 +346,106 @@ app.put('/api/leads/:id', async (req, res) => {
       success: false,
       error: 'Internal server error',
       message: error.message
+    });
+  }
+});
+
+// POST endpoint to bulk import leads from file (CSV/JSON)
+app.post('/api/leads/import', async (req, res) => {
+  // Check for file in request
+  if (!req.files || !req.files.file) {
+    return res.status(400).json({
+      success: false,
+      error: 'No file provided',
+      message: 'Please upload a CSV or JSON file'
+    });
+  }
+
+  if (!this.supabase) {
+    return res.status(503).json({
+      success: false,
+      error: 'Database not configured'
+    });
+  }
+
+  try {
+    const file = req.files.file;
+    const fileBuffer = file.data;
+    const fileName = file.name;
+    const mimeType = file.mimetype;
+
+    console.log(`📁 Processing file upload: ${fileName} (${mimeType})`);
+
+    // Parse file to extract lead data
+    let leads = parseFile(fileBuffer, mimeType || fileName);
+
+    if (!leads || leads.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No valid leads found in file',
+        message: 'File may be empty or improperly formatted'
+      });
+    }
+
+    console.log(`📋 Parsed ${leads.length} records from file`);
+
+    // Validate leads
+    const { valid, invalid, errors } = validateLeads(leads);
+
+    console.log(`✅ Valid: ${valid.length}, ❌ Invalid: ${invalid.length}`);
+
+    if (valid.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'No valid leads to import',
+        validationErrors: errors,
+        summary: {
+          total: leads.length,
+          valid: 0,
+          invalid: invalid.length
+        }
+      });
+    }
+
+    // Add metadata for bulk import
+    const leadsToInsert = valid.map(lead => ({
+      ...lead,
+      ip_address: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
+      user_agent: req.headers['user-agent'],
+      created_at: new Date().toISOString()
+    }));
+
+    // Bulk insert into database
+    const { data: insertedLeads, error: insertError } = await this.supabase
+      .from('leads')
+      .insert(leadsToInsert)
+      .select();
+
+    if (insertError) {
+      throw insertError;
+    }
+
+    console.log(`💾 Successfully inserted ${insertedLeads.length} leads into database`);
+
+    res.status(201).json({
+      success: true,
+      message: `${insertedLeads.length} leads imported successfully`,
+      summary: {
+        total: leads.length,
+        valid: valid.length,
+        invalid: invalid.length,
+        imported: insertedLeads.length
+      },
+      data: insertedLeads,
+      validationWarnings: errors.length > 0 ? errors : undefined
+    });
+
+  } catch (error) {
+    console.error('Error processing file upload:', error.message || error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to import leads',
+      message: error.message || String(error)
     });
   }
 });

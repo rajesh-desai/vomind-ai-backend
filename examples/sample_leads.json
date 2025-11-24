@@ -1,0 +1,33 @@
+[
+  {
+    "name": "David Lee",
+    "email": "david@example.com",
+    "phone": "+1333333333",
+    "company": "Digital Ventures",
+    "lead_source": "file_import",
+    "lead_status": "new",
+    "lead_priority": "high",
+    "message": "Wants to schedule call",
+    "notes": "VIP prospect"
+  },
+  {
+    "name": "Emma Taylor",
+    "email": "emma@example.com",
+    "phone": "+1222222222",
+    "company": "NextGen Systems",
+    "lead_source": "file_import",
+    "lead_status": "new",
+    "lead_priority": "medium",
+    "message": "Interested in partnership",
+    "notes": null
+  },
+  {
+    "name": "Frank Miller",
+    "email": "frank@example.com",
+    "phone": "+1111111111",
+    "company": "CloudWorks",
+    "lead_source": "file_import",
+    "lead_status": "new",
+    "lead_priority": "low"
+  }
+]
