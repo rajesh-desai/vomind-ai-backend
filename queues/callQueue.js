@@ -156,7 +156,7 @@ async function scheduleRecurringCall(callData, cronExpression) {
  */
 async function scheduleBulkCalls(callsData) {
   const jobs = callsData.map((callData, index) => ({
-    name: 'start-media-stream',
+    name: 'make-call',
     data: {
       to: callData.to,
       message: callData.message,
@@ -358,6 +358,204 @@ async function resumeQueue() {
 }
 
 /**
+ * Schedule automation to fetch new leads and call them
+ * Uses Redis cron pattern (cronExpression parameter)
+ * @param {Object} supabase - Supabase client for fetching leads
+ * @param {Object} options - Automation options
+ * @param {string} options.cronExpression - Cron pattern (e.g., '0 9 * * *' for 9 AM daily)
+ * @param {string} options.message - Message to say during call (default: greeting)
+ * @param {string} options.priority - Job priority (default: 'normal')
+ * @param {number} options.leadLimit - Max leads to schedule per run (default: 10)
+ * @returns {Promise<Object>} Job info
+ */
+async function scheduleLeadAutomation(supabase, options = {}) {
+  const {
+    cronExpression = '0 9 * * *', // Default: 9 AM daily
+    message = 'Hello from VoMindAI. We have an opportunity for you.',
+    priority = 'normal',
+    leadLimit = 10
+  } = options;
+
+  try {
+    // Create a recurring job that fetches new leads and schedules calls
+    const job = await callQueue.add(
+      'fetch-and-schedule-leads',
+      {
+        supabaseConfig: {
+          url: process.env.SUPABASE_URL,
+          key: process.env.SUPABASE_ANON_KEY
+        },
+        message,
+        priority,
+        leadLimit
+      },
+      {
+        repeat: {
+          pattern: cronExpression
+        },
+        jobId: `automation-${Date.now()}`,
+        removeOnComplete: false,
+        removeOnFail: false
+      }
+    );
+
+    console.log(`⏰ Automation scheduled: ${job.id} (${cronExpression})`);
+    
+    return {
+      success: true,
+      jobId: job.id,
+      cronExpression,
+      message: `Automation scheduled to run: ${cronExpression}`,
+      nextRunTime: job.data // Will be set by BullMQ
+    };
+  } catch (error) {
+    console.error('Error scheduling automation:', error.message);
+    throw new Error(`Failed to schedule automation: ${error.message}`);
+  }
+}
+
+/**
+ * Get all active automation schedules
+ * @returns {Promise<Array>} Array of active automation jobs
+ */
+async function getAutomationSchedules() {
+  try {
+    const jobs = await callQueue.getJobs(['active', 'delayed', 'wait']);
+    
+    // Filter for automation jobs only
+    const automationJobs = jobs.filter(job => 
+      job.name === 'fetch-and-schedule-leads' || 
+      job.data.leadLimit // Has leadLimit property (automation marker)
+    );
+
+    return automationJobs.map(job => ({
+      jobId: job.id,
+      name: job.name,
+      cronExpression: job.opts.repeat?.pattern || 'N/A',
+      state: job.getState(),
+      message: job.data.message,
+      leadLimit: job.data.leadLimit,
+      priority: job.data.priority,
+      attempts: job.attemptsMade,
+      maxAttempts: job.opts.attempts
+    }));
+  } catch (error) {
+    console.error('Error fetching automation schedules:', error.message);
+    throw new Error(`Failed to fetch schedules: ${error.message}`);
+  }
+}
+
+/**
+ * Stop an automation schedule
+ * @param {string} jobId - Job ID to stop
+ * @returns {Promise<boolean>} Success status
+ */
+async function stopAutomation(jobId) {
+  try {
+    const job = await callQueue.getJob(jobId);
+    
+    if (!job) {
+      throw new Error(`Job ${jobId} not found`);
+    }
+
+    // Remove the repeat pattern to stop automation
+    await job.removeRepeatability();
+    console.log(`⏹️  Automation stopped: ${jobId}`);
+    
+    return {
+      success: true,
+      message: `Automation ${jobId} stopped`
+    };
+  } catch (error) {
+    console.error('Error stopping automation:', error.message);
+    throw new Error(`Failed to stop automation: ${error.message}`);
+  }
+}
+
+/**
+ * Manually fetch and schedule calls for new leads (one-time execution)
+ * @param {Object} supabase - Supabase client
+ * @param {Object} models - Database models
+ * @param {Object} options - Options
+ * @returns {Promise<Object>} Scheduling result
+ */
+async function fetchAndScheduleNewLeads(supabase, models, options = {}) {
+  const {
+    message = 'Hello from VoMindAI. We have an opportunity for you.',
+    priority = 'normal',
+    leadLimit = 10
+  } = options;
+
+  try {
+    if (!supabase || !models) {
+      throw new Error('Supabase client and models are required');
+    }
+
+    // Fetch new leads (lead_status = 'new' and not yet called)
+    const { data: newLeads, error } = await supabase
+      .from('leads')
+      .select('*')
+      .eq('lead_status', 'new')
+      .is('call_sid', null) // Not yet called
+      .limit(leadLimit);
+
+    if (error) {
+      throw error;
+    }
+
+    if (!newLeads || newLeads.length === 0) {
+      return {
+        success: true,
+        message: 'No new leads to call',
+        scheduled: 0,
+        leads: []
+      };
+    }
+
+    console.log(`📋 Found ${newLeads.length} new leads to call`);
+
+    // Schedule calls for each lead
+    const callsToSchedule = newLeads
+      .filter(lead => lead.phone) // Only leads with phone numbers
+      .map(lead => ({
+        to: lead.phone,
+        message,
+        lead_id: lead.id,
+        priority,
+        metadata: {
+          automationRun: true,
+          scheduledAt: new Date().toISOString()
+        }
+      }));
+
+    if (callsToSchedule.length === 0) {
+      return {
+        success: true,
+        message: 'No leads with phone numbers to call',
+        scheduled: 0,
+        leads: newLeads
+      };
+    }
+
+    // Use existing bulk scheduling function
+    const scheduledJobs = await scheduleBulkCalls(callsToSchedule);
+
+    console.log(`✅ Scheduled ${scheduledJobs.length} calls for new leads`);
+
+    return {
+      success: true,
+      message: `Scheduled ${scheduledJobs.length} calls for new leads`,
+      scheduled: scheduledJobs.length,
+      leads: newLeads,
+      jobs: scheduledJobs
+    };
+  } catch (error) {
+    console.error('Error in fetchAndScheduleNewLeads:', error.message);
+    throw new Error(`Failed to fetch and schedule leads: ${error.message}`);
+  }
+}
+
+/**
  * Close connections gracefully
  * @returns {Promise<void>}
  */
@@ -375,6 +573,10 @@ module.exports = {
   scheduleDelayedCall,
   scheduleRecurringCall,
   scheduleBulkCalls,
+  scheduleLeadAutomation,
+  getAutomationSchedules,
+  stopAutomation,
+  fetchAndScheduleNewLeads,
   getJobStatus,
   cancelCall,
   retryCall,

@@ -13,6 +13,10 @@ const {
   scheduleDelayedCall,
   scheduleRecurringCall,
   scheduleBulkCalls,
+  scheduleLeadAutomation,
+  getAutomationSchedules,
+  stopAutomation,
+  fetchAndScheduleNewLeads,
   getJobStatus,
   cancelCall,
   retryCall,
@@ -89,7 +93,7 @@ const client = twilio(accountSid, authToken);
 // Initialize call queue worker
 let callWorker = null;
 try {
-  callWorker = createCallWorker(models);
+  callWorker = createCallWorker(models, supabase);
   console.log('📞 Call queue worker initialized');
 } catch (error) {
   console.warn('⚠️  Call queue worker not initialized:', error.message);
@@ -1015,6 +1019,118 @@ app.post('/api/queue/resume', async (req, res) => {
 
 // ============================================
 // END QUEUE MANAGEMENT ENDPOINTS
+// ============================================
+
+// ============================================
+// LEAD AUTOMATION ENDPOINTS
+// ============================================
+
+// Schedule automation to fetch new leads and call them
+app.post('/api/automation/schedule', async (req, res) => {
+  const { 
+    cronExpression = '0 9 * * *',
+    message = 'Hello from VoMindAI. We have an opportunity for you.',
+    priority = 'normal',
+    leadLimit = 10
+  } = req.body;
+
+  try {
+    const result = await scheduleLeadAutomation(supabase, {
+      cronExpression,
+      message,
+      priority,
+      leadLimit
+    });
+
+    res.json({
+      success: true,
+      ...result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to schedule automation',
+      message: error.message
+    });
+  }
+});
+
+// Get all active automation schedules
+app.get('/api/automation/schedules', async (req, res) => {
+  try {
+    const schedules = await getAutomationSchedules();
+
+    res.json({
+      success: true,
+      count: schedules.length,
+      schedules
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch automation schedules',
+      message: error.message
+    });
+  }
+});
+
+// Stop an automation schedule
+app.post('/api/automation/stop/:jobId', async (req, res) => {
+  const { jobId } = req.params;
+
+  try {
+    const result = await stopAutomation(jobId);
+
+    res.json({
+      success: true,
+      ...result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to stop automation',
+      message: error.message
+    });
+  }
+});
+
+// Manually trigger automation (fetch new leads and schedule calls once)
+app.post('/api/automation/run-now', async (req, res) => {
+  const { 
+    message = 'Hello from VoMindAI. We have an opportunity for you.',
+    priority = 'normal',
+    leadLimit = 10
+  } = req.body;
+
+  if (!this.supabase || !models) {
+    return res.status(503).json({
+      success: false,
+      error: 'Database not configured'
+    });
+  }
+
+  try {
+    const result = await fetchAndScheduleNewLeads(this.supabase, models, {
+      message,
+      priority,
+      leadLimit
+    });
+
+    res.json({
+      success: true,
+      ...result
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to run automation',
+      message: error.message
+    });
+  }
+});
+
+// ============================================
+// END LEAD AUTOMATION ENDPOINTS
 // ============================================
 
 // Call events tracking endpoint for outgoing calls
