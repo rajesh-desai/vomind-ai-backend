@@ -683,6 +683,105 @@ app.get('/api/queue/stats', async (req, res) => {
   }
 });
 
+// Get call statistics (total, completed, failed)
+app.get('/api/call-stats', async (req, res) => {
+  if (!this.supabase) {
+    return res.status(503).json({
+      success: false,
+      error: 'Database not configured'
+    });
+  }
+
+  try {
+    // Total calls
+    const { count: totalCount, error: totalErr } = await this.supabase
+      .from('call_events')
+      .select('*', { count: 'exact' });
+
+    if (totalErr) throw totalErr;
+
+    // Completed calls
+    const { count: completedCount, error: completedErr } = await this.supabase
+      .from('call_events')
+      .select('*', { count: 'exact' })
+      .eq('call_status', 'completed');
+
+    if (completedErr) throw completedErr;
+
+    // Failed calls
+    const { count: failedCount, error: failedErr } = await this.supabase
+      .from('call_events')
+      .select('*', { count: 'exact' })
+      .eq('call_status', 'failed');
+
+    if (failedErr) throw failedErr;
+
+    res.json({
+      success: true,
+      stats: {
+        total: totalCount || 0,
+        completed: completedCount || 0,
+        failed: failedCount || 0
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching call stats:', error.message || error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch call statistics',
+      message: error.message || String(error)
+    });
+  }
+});
+
+// Get lead statistics (total, new, contacted)
+app.get('/api/lead-stats', async (req, res) => {
+  if (!this.supabase) {
+    return res.status(503).json({
+      success: false,
+      error: 'Database not configured'
+    });
+  }
+
+  try {
+    // Total leads
+    const { count: totalCount, error: totalErr } = await this.supabase
+      .from('leads')
+      .select('*', { count: 'exact' });
+    if (totalErr) throw totalErr;
+
+    // New leads (lead_status = 'new')
+    const { count: newCount, error: newErr } = await this.supabase
+      .from('leads')
+      .select('*', { count: 'exact' })
+      .eq('lead_status', 'new');
+    if (newErr) throw newErr;
+
+    // Contacted leads (lead_status = 'contacted')
+    const { count: contactedCount, error: contactedErr } = await this.supabase
+      .from('leads')
+      .select('*', { count: 'exact' })
+      .eq('lead_status', 'contacted');
+    if (contactedErr) throw contactedErr;
+
+    res.json({
+      success: true,
+      stats: {
+        total: totalCount || 0,
+        new: newCount || 0,
+        contacted: contactedCount || 0
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching lead stats:', error.message || error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch lead statistics',
+      message: error.message || String(error)
+    });
+  }
+});
+
 // Get waiting jobs
 app.get('/api/queue/waiting', async (req, res) => {
   const { start = 0, end = 10 } = req.query;
