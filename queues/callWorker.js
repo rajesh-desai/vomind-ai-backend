@@ -151,11 +151,23 @@ async function processCallJob(job) {
 
     await job.updateProgress(20);
 
+    // Build URL with parameters including speakFirst if enabled
+    const urlParams = new URLSearchParams();
+    urlParams.append('message', message || 'Hello from VoMindAI');
+    
+    // Add speakFirst parameters if present in metadata
+    if (metadata && metadata.speakFirst) {
+      urlParams.append('speakFirst', 'true');
+      if (metadata.initialMessage) {
+        urlParams.append('initialMessage', metadata.initialMessage);
+      }
+    }
+    
     // Make the Twilio call
     const call = await twilioClient.calls.create({
       from: twilioPhoneNumber,
       to: to,
-      url: `${publicUrl}/media-stream-twiml?message=${encodeURIComponent(message || 'Hello from VoMindAI')}`,
+      url: `${publicUrl}/media-stream-twiml?${urlParams.toString()}`,
       statusCallback: `${publicUrl}/call-events`,
       statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
       statusCallbackMethod: 'POST',

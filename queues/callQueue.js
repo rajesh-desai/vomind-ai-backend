@@ -63,8 +63,8 @@ queueEvents.on('delayed', ({ jobId, delay }) => {
  */
 async function scheduleImmediateCall(callData) {
   const { to, message, lead_id, priority = 'normal', metadata = {} } = callData;
-
-  const job = await callQueue.add('start-media-stream', {
+  console.log('Scheduling immediate call with data:', callData);
+  const job = await callQueue.add('make-call', {
     to,
     message,
     lead_id,
@@ -96,7 +96,7 @@ async function scheduleDelayedCall(callData, delay) {
     ? Math.max(0, delay.getTime() - Date.now())
     : delay;
 
-  const job = await callQueue.add('make-call', {
+  const job = await callQueue.add('start-media-stream', {
     to,
     message,
     lead_id,
@@ -126,7 +126,7 @@ async function scheduleDelayedCall(callData, delay) {
 async function scheduleRecurringCall(callData, cronExpression) {
   const { to, message, lead_id, priority = 'normal', metadata = {} } = callData;
 
-  const job = await callQueue.add('make-call', {
+  const job = await callQueue.add('start-media-stream', {
     to,
     message,
     lead_id,
@@ -156,7 +156,7 @@ async function scheduleRecurringCall(callData, cronExpression) {
  */
 async function scheduleBulkCalls(callsData) {
   const jobs = callsData.map((callData, index) => ({
-    name: 'make-call',
+    name: 'start-media-stream',
     data: {
       to: callData.to,
       message: callData.message,

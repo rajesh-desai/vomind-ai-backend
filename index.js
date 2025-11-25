@@ -82,10 +82,10 @@ const publicUrl = process.env.PUBLIC_URL || 'http://localhost:3000';
 // Supabase configuration
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_ANON_KEY;
-this.supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
+const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
 // Initialize ORM models
-const models = this.supabase ? initializeModels(this.supabase) : null;
+const models = supabase ? initializeModels(supabase) : null;
 
 // Initialize Twilio client
 const client = twilio(accountSid, authToken);
@@ -149,7 +149,7 @@ app.post('/api/new-lead', async (req, res) => {
     }
   }
 
-  if (!this.supabase) {
+  if (!supabase) {
     return res.status(503).json({
       success: false,
       error: 'Database not configured'
@@ -211,7 +211,7 @@ app.get('/api/leads', async (req, res) => {
     sortOrder = 'desc'
   } = req.query;
 
-  if (!this.supabase) {
+  if (!supabase) {
     return res.status(503).json({
       success: false,
       error: 'Database not configured'
@@ -253,7 +253,7 @@ app.get('/api/leads', async (req, res) => {
 app.get('/api/leads/:id', async (req, res) => {
   const { id } = req.params;
 
-  if (!this.supabase) {
+  if (!supabase) {
     return res.status(503).json({
       success: false,
       error: 'Database not configured'
@@ -301,7 +301,7 @@ app.put('/api/leads/:id', async (req, res) => {
     last_contacted_at
   } = req.body;
 
-  if (!this.supabase) {
+  if (!supabase) {
     return res.status(503).json({
       success: false,
       error: 'Database not configured'
@@ -365,7 +365,7 @@ app.post('/api/leads/import', async (req, res) => {
     });
   }
 
-  if (!this.supabase) {
+  if (!supabase) {
     return res.status(503).json({
       success: false,
       error: 'Database not configured'
@@ -420,7 +420,7 @@ app.post('/api/leads/import', async (req, res) => {
     }));
 
     // Bulk insert into database
-    const { data: insertedLeads, error: insertError } = await this.supabase
+    const { data: insertedLeads, error: insertError } = await supabase
       .from('leads')
       .insert(leadsToInsert)
       .select();
@@ -567,8 +567,8 @@ app.post('/call-status', (req, res) => {
 
 // Schedule an immediate outbound call
 app.post('/api/queue/schedule-call', async (req, res) => {
-  const { to, message, lead_id, priority, metadata } = req.body;
-
+  const { to, message, lead_id, priority, metadata, speakFirst, initialMessage } = req.body;
+  console.log('Scheduling immediate call with data:', req.body);
   if (!to) {
     return res.status(400).json({
       success: false,
@@ -577,12 +577,18 @@ app.post('/api/queue/schedule-call', async (req, res) => {
   }
 
   try {
+    const callMetadata = metadata || {};
+    if (speakFirst === true) {
+      callMetadata.speakFirst = true;
+      callMetadata.initialMessage = initialMessage || 'Hello! How can I help you today?';
+    }
+    
     const result = await scheduleImmediateCall({
       to,
       message: message || 'Hello from VoMindAI',
       lead_id,
       priority: priority || 'normal',
-      metadata: metadata || {}
+      metadata: callMetadata
     });
 
     res.json({
@@ -601,7 +607,7 @@ app.post('/api/queue/schedule-call', async (req, res) => {
 
 // Schedule a delayed outbound call
 app.post('/api/queue/schedule-delayed-call', async (req, res) => {
-  const { to, message, lead_id, priority, metadata, scheduleAt, delayMs } = req.body;
+  const { to, message, lead_id, priority, metadata, scheduleAt, delayMs, speakFirst, initialMessage } = req.body;
 
   if (!to) {
     return res.status(400).json({
@@ -619,13 +625,18 @@ app.post('/api/queue/schedule-delayed-call', async (req, res) => {
 
   try {
     const delay = scheduleAt ? new Date(scheduleAt) : parseInt(delayMs);
+    const callMetadata = metadata || {};
+    if (speakFirst === true) {
+      callMetadata.speakFirst = true;
+      callMetadata.initialMessage = initialMessage || 'Hello! How can I help you today?';
+    }
     
     const result = await scheduleDelayedCall({
       to,
       message: message || 'Hello from VoMindAI',
       lead_id,
       priority: priority || 'normal',
-      metadata: metadata || {}
+      metadata: callMetadata
     }, delay);
 
     res.json({
@@ -644,7 +655,7 @@ app.post('/api/queue/schedule-delayed-call', async (req, res) => {
 
 // Schedule a recurring call
 app.post('/api/queue/schedule-recurring-call', async (req, res) => {
-  const { to, message, lead_id, priority, metadata, cronExpression } = req.body;
+  const { to, message, lead_id, priority, metadata, cronExpression, speakFirst, initialMessage } = req.body;
 
   if (!to || !cronExpression) {
     return res.status(400).json({
@@ -654,12 +665,18 @@ app.post('/api/queue/schedule-recurring-call', async (req, res) => {
   }
 
   try {
+    const callMetadata = metadata || {};
+    if (speakFirst === true) {
+      callMetadata.speakFirst = true;
+      callMetadata.initialMessage = initialMessage || 'Hello! How can I help you today?';
+    }
+    
     const result = await scheduleRecurringCall({
       to,
       message: message || 'Hello from VoMindAI',
       lead_id,
       priority: priority || 'normal',
-      metadata: metadata || {}
+      metadata: callMetadata
     }, cronExpression);
 
     res.json({
@@ -800,7 +817,7 @@ app.get('/api/queue/stats', async (req, res) => {
 
 // Get call statistics (total, completed, failed)
 app.get('/api/call-stats', async (req, res) => {
-  if (!this.supabase) {
+  if (!supabase) {
     return res.status(503).json({
       success: false,
       error: 'Database not configured'
@@ -809,14 +826,14 @@ app.get('/api/call-stats', async (req, res) => {
 
   try {
     // Total calls
-    const { count: totalCount, error: totalErr } = await this.supabase
+    const { count: totalCount, error: totalErr } = await supabase
       .from('call_events')
       .select('*', { count: 'exact' });
 
     if (totalErr) throw totalErr;
 
     // Completed calls
-    const { count: completedCount, error: completedErr } = await this.supabase
+    const { count: completedCount, error: completedErr } = await supabase
       .from('call_events')
       .select('*', { count: 'exact' })
       .eq('call_status', 'completed');
@@ -824,7 +841,7 @@ app.get('/api/call-stats', async (req, res) => {
     if (completedErr) throw completedErr;
 
     // Failed calls
-    const { count: failedCount, error: failedErr } = await this.supabase
+    const { count: failedCount, error: failedErr } = await supabase
       .from('call_events')
       .select('*', { count: 'exact' })
       .eq('call_status', 'failed');
@@ -851,7 +868,7 @@ app.get('/api/call-stats', async (req, res) => {
 
 // Get lead statistics (total, new, contacted)
 app.get('/api/lead-stats', async (req, res) => {
-  if (!this.supabase) {
+  if (!supabase) {
     return res.status(503).json({
       success: false,
       error: 'Database not configured'
@@ -860,20 +877,20 @@ app.get('/api/lead-stats', async (req, res) => {
 
   try {
     // Total leads
-    const { count: totalCount, error: totalErr } = await this.supabase
+    const { count: totalCount, error: totalErr } = await supabase
       .from('leads')
       .select('*', { count: 'exact' });
     if (totalErr) throw totalErr;
 
     // New leads (lead_status = 'new')
-    const { count: newCount, error: newErr } = await this.supabase
+    const { count: newCount, error: newErr } = await supabase
       .from('leads')
       .select('*', { count: 'exact' })
       .eq('lead_status', 'new');
     if (newErr) throw newErr;
 
     // Contacted leads (lead_status = 'contacted')
-    const { count: contactedCount, error: contactedErr } = await this.supabase
+    const { count: contactedCount, error: contactedErr } = await supabase
       .from('leads')
       .select('*', { count: 'exact' })
       .eq('lead_status', 'contacted');
@@ -1102,7 +1119,7 @@ app.post('/api/automation/run-now', async (req, res) => {
     leadLimit = 10
   } = req.body;
 
-  if (!this.supabase || !models) {
+  if (!supabase || !models) {
     return res.status(503).json({
       success: false,
       error: 'Database not configured'
@@ -1110,7 +1127,7 @@ app.post('/api/automation/run-now', async (req, res) => {
   }
 
   try {
-    const result = await fetchAndScheduleNewLeads(this.supabase, models, {
+    const result = await fetchAndScheduleNewLeads(supabase, models, {
       message,
       priority,
       leadLimit
@@ -1186,8 +1203,8 @@ app.post('/call-events', async (req, res) => {
 
 // Endpoint to start media stream
 app.post('/start-media-stream', async (req, res) => {
-  const { to, message } = req.body;
-
+  const { to, message, speakFirst, initialMessage } = req.body;
+  console.log('Received /start-media-stream request:', req.body);
   if (!to) {
     return res.status(400).json({ error: 'Phone number is required' });
   }
@@ -1201,7 +1218,17 @@ app.post('/start-media-stream', async (req, res) => {
       providedNumber: validation.original
     });
   }
-  const twimlUrl = `${publicUrl}/media-stream-twiml`;
+  
+  // Build TwiML URL with speakFirst parameters
+  let twimlUrl = `${publicUrl}/media-stream-twiml`;
+  if (speakFirst === true) {
+    const params = new URLSearchParams({
+      speakFirst: 'true',
+      initialMessage: initialMessage || 'Hello! How can I help you today?'
+    });
+    twimlUrl += `?${params.toString()}`;
+  }
+  
   try {
     const call = await client.calls.create({
       url: twimlUrl,
@@ -1216,7 +1243,8 @@ app.post('/start-media-stream', async (req, res) => {
       message: 'Media stream call initiated successfully',
       to: validation.formatted,
       country: validation.country,
-      twimlUrl: twimlUrl
+      twimlUrl: twimlUrl,
+      speakFirst: speakFirst === true
     });
   } catch (error) {
     res.status(500).json({
@@ -1243,7 +1271,7 @@ app.post('/api/agentCallLogs', async (req, res) => {
     dateTo
   } = params;
 
-  if (!this.supabase) {
+  if (!supabase) {
     return res.status(503).json({
       success: false,
       error: 'Database not configured'
@@ -1252,7 +1280,7 @@ app.post('/api/agentCallLogs', async (req, res) => {
 
   try {
     // Build the query
-    let query = this.supabase
+    let query = supabase
       .from('call_events')
       .select('*', { count: 'exact' });
 
@@ -1357,11 +1385,28 @@ app.post('/api/agentCallLogs', async (req, res) => {
 // TwiML endpoint for media stream (supports both GET and POST)
 const handleMediaStreamTwiml = (req, res) => {
   try {
-    const twiml = new twilio.twiml.VoiceResponse();
+    // Extract speakFirst and initialMessage from query parameters first, then body
+    const params = req.query || req.body || {};
+    const speakFirst = params.speakFirst === 'true' || params.speakFirst === true;
+    const initialMessage = params.initialMessage || 'Hello! How can I help you today?';
+    
+    console.log(`📺 TwiML endpoint received - speakFirst: ${speakFirst}, initialMessage: "${initialMessage}"`);
     
     // Use Connect + Stream for BIDIRECTIONAL audio (user can hear AI responses)
     const publicHost = publicUrl.replace('https://', '').replace('http://', '');
-    const wsUrl = `wss://${publicHost}/media-stream`;
+    let wsUrl = `wss://${publicHost}/media-stream`;
+    
+    // If speakFirst is enabled, add as query parameters to WebSocket URL
+    if (speakFirst) {
+      const wsParams = new URLSearchParams({
+        speakFirst: 'true',
+        initialMessage: initialMessage
+      });
+      wsUrl += `?${wsParams.toString()}`;
+      console.log(`📺 Built WebSocket URL with speakFirst: ${wsUrl}`);
+    }
+    
+    const twiml = new twilio.twiml.VoiceResponse();
     const connect = twiml.connect();
     connect.stream({
       url: wsUrl
@@ -1388,11 +1433,19 @@ const openAISessions = new Map();
 
 wss.on('connection', async (ws, req) => {
   
+  // Parse query parameters from WebSocket URL (for speakFirst feature)
+  const url = new URL(req.url, `wss://${req.headers.host}`);
+  const queryParams = url.searchParams;
+  const wsQuerySpeakFirst = queryParams.get('speakFirst') === 'true';
+  const wsQueryInitialMessage = queryParams.get('initialMessage') || null;
+  
   let sessionData = {
     callSid: null,
     streamSid: null,
     audioBuffer: [],
-    openAISession: null
+    openAISession: null,
+    speakFirst: wsQuerySpeakFirst,
+    initialMessage: wsQueryInitialMessage || 'Hello! How can I help you today?'
   };
 
   ws.on('message', async (message) => {
@@ -1407,6 +1460,9 @@ wss.on('connection', async (ws, req) => {
         case 'start':
           sessionData.callSid = msg.start.callSid;
           sessionData.streamSid = msg.start.streamSid;
+          
+          console.log(`[${sessionData.callSid}] 🎯 Media stream started - speakFirst: ${sessionData.speakFirst}, initialMessage: "${sessionData.initialMessage}"`);
+          
           activeSessions.set(sessionData.callSid, sessionData);
           
           // Initialize OpenAI Realtime session with retry logic
@@ -1419,7 +1475,11 @@ wss.on('connection', async (ws, req) => {
               const openAISession = new OpenAIRealtimeSession(
                 sessionData.callSid,
                 sessionData.streamSid,
-                models
+                models,
+                {
+                  speakFirst: sessionData.speakFirst,
+                  initialMessage: sessionData.initialMessage
+                }
               );
               await openAISession.connect();
               openAISession.setTwilioWebSocket(ws);
@@ -1556,7 +1616,7 @@ app.get('/conversation/:callSid', (req, res) => {
 app.get('/api/transcripts/:callSid', async (req, res) => {
   const { callSid } = req.params;
   
-  if (!this.supabase) {
+  if (!supabase) {
     return res.status(503).json({
       error: 'Database not configured',
       callSid
@@ -1586,7 +1646,7 @@ app.get('/api/transcripts/:callSid', async (req, res) => {
 app.get('/transcripts', async (req, res) => {
   const { limit = 100, offset = 0 } = req.query;
   
-  if (!this.supabase) {
+  if (!supabase) {
     return res.status(503).json({
       error: 'Database not configured'
     });

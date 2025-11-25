@@ -6,7 +6,7 @@
 const WebSocket = require('ws');
 
 class OpenAIRealtimeSession {
-  constructor(callSid, streamSid, models = null) {
+  constructor(callSid, streamSid, models = null, options = {}) {
     this.callSid = callSid;
     this.streamSid = streamSid;
     this.openAiWs = null;
@@ -19,6 +19,11 @@ class OpenAIRealtimeSession {
     this.hasFailed = false;
     this.errorCount = 0;
     this.lastErrorTime = null;
+    
+    // Assistant speaks first configuration
+    this.speakFirst = options.speakFirst || false;
+    this.initialMessage = options.initialMessage || 'Hello! How can I help you today?';
+    this.hasSpokenFirst = false;
     
     // Latency tracking
     this.latencyMetrics = {
@@ -117,6 +122,39 @@ class OpenAIRealtimeSession {
         });
         
         console.log(`[${this.callSid}] Session configured for Twilio (g711_ulaw format)`);
+        
+        // If speakFirst is enabled, directly create an assistant message
+        if (this.speakFirst && !this.hasSpokenFirst) {
+          console.log(`[${this.callSid}] 🎤 Assistant will speak first: "${this.initialMessage}"`);
+          
+          // Create an assistant message directly (not a user message to respond to)
+          this.sendToOpenAI({
+            type: 'conversation.item.create',
+            item: {
+              type: 'message',
+              role: 'assistant',
+              content: [
+                {
+                  type: 'text',
+                  text: this.initialMessage
+                }
+              ]
+            }
+          });
+          
+          // Now generate audio response for this assistant message
+          this.sendToOpenAI({
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+              voice: 'alloy'
+            }
+          });
+          
+          this.hasSpokenFirst = true;
+          console.log(`[${this.callSid}] ✅ Initial greeting created, generating audio response`);
+        }
+        
         resolve();
       });
 
