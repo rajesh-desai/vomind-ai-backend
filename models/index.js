@@ -6,6 +6,7 @@
 const Lead = require('./Lead');
 const CallEvent = require('./CallEvent');
 const ConversationTranscript = require('./ConversationTranscript');
+const CallRecording = require('./CallRecording');
 
 /**
  * Initialize all models with a Supabase client
@@ -16,7 +17,8 @@ function initializeModels(supabase) {
   return {
     Lead: new Lead(supabase),
     CallEvent: new CallEvent(supabase),
-    ConversationTranscript: new ConversationTranscript(supabase)
+    ConversationTranscript: new ConversationTranscript(supabase),
+    CallRecording: new CallRecording(supabase)
   };
 }
 
@@ -24,5 +26,6 @@ module.exports = {
   Lead,
   CallEvent,
   ConversationTranscript,
+  CallRecording,
   initializeModels
 };

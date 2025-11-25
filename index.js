@@ -7,6 +7,7 @@ const twilio = require('twilio');
 const { createClient } = require('@supabase/supabase-js');
 const { validatePhoneNumber } = require('./utils/phoneValidator');
 const OpenAIRealtimeSession = require('./utils/openAIRealtime');
+const RecordingManager = require('./utils/recordingManager');
 const { initializeModels } = require('./models');
 const {
   scheduleImmediateCall,
@@ -79,16 +80,26 @@ const authToken = process.env.TWILIO_AUTH_TOKEN;
 const twilioPhoneNumber = process.env.TWILIO_PHONE_NUMBER;
 const publicUrl = process.env.PUBLIC_URL || 'http://localhost:3000';
 
+// Initialize Twilio client
+const client = twilio(accountSid, authToken);
+
 // Supabase configuration
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_ANON_KEY;
-const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
+const supabaseAnonKey = process.env.SUPABASE_ANON_KEY;
+// Use service role key on the server to bypass RLS for backend operations (required for uploads/inserts)
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || null;
+const supabaseClientKey = supabaseServiceRoleKey || supabaseAnonKey;
+const supabase = (supabaseUrl && supabaseClientKey) ? createClient(supabaseUrl, supabaseClientKey) : null;
 
 // Initialize ORM models
 const models = supabase ? initializeModels(supabase) : null;
 
-// Initialize Twilio client
-const client = twilio(accountSid, authToken);
+// Initialize Recording Manager
+let recordingManager = null;
+if (supabase && models && client) {
+  recordingManager = new RecordingManager(client, supabase, models);
+  console.log('🎙️  Recording Manager initialized');
+}
 
 // Initialize call queue worker
 let callWorker = null;
@@ -478,6 +489,11 @@ app.post('/make-call', async (req, res) => {
       from: twilioPhoneNumber,
       statusCallback: `${publicUrl}/call-events`,
       statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
+      record: true,
+      recordingChannels: 'mono',
+      recordingStatusCallback: `${publicUrl}/recording-status`,
+      recordingStatusCallbackMethod: 'POST',
+      recordingStatusCallbackEvent: ['completed']
     });
 
     res.json({
@@ -1201,6 +1217,81 @@ app.post('/call-events', async (req, res) => {
   }
 });
 
+// Recording Status Callback - Triggered when recording completes
+app.post('/recording-status', async (req, res) => {
+  const {
+    AccountSid,
+    CallSid,
+    RecordingSid,
+    RecordingUrl,
+    RecordingStatus,
+    RecordingDuration,
+    RecordingChannels,
+    RecordingSource
+  } = req.body;
+
+  console.log(`🎙️  Recording Status Update - Call: ${CallSid}, Recording: ${RecordingSid}, Status: ${RecordingStatus}`);
+
+  try {
+    // Only process completed recordings
+    if (RecordingStatus !== 'completed') {
+      console.log(`⏭️  Skipping recording with status: ${RecordingStatus}`);
+      return res.status(200).send('OK');
+    }
+
+    if (!recordingManager) {
+      console.warn('⚠️  Recording Manager not initialized, cannot process recording');
+      return res.status(200).send('OK');
+    }
+
+    // Find the associated call event to get lead_id
+    let callEventId = null;
+    let leadId = null;
+    
+    if (models && models.CallEvent) {
+      try {
+        const callEvent = await models.CallEvent.findByCallSid(CallSid);
+        if (callEvent) {
+          callEventId = callEvent.id;
+          leadId = callEvent.lead_id;
+        }
+      } catch (eventError) {
+        console.warn(`⚠️  Could not fetch call event for ${CallSid}:`, eventError.message);
+      }
+    }
+
+    // Process the recording asynchronously to avoid timeout
+    setImmediate(async () => {
+      try {
+        const result = await recordingManager.processRecording({
+          recordingSid: RecordingSid,
+          callSid: CallSid,
+          callEventId: callEventId,
+          leadId: leadId,
+          duration: RecordingDuration,
+          format: 'mp3'
+        });
+
+        if (result.success) {
+          console.log(`✅ Recording processed and saved:`, result.recording.id);
+        } else {
+          console.error(`❌ Failed to process recording:`, result.error);
+        }
+      } catch (error) {
+        console.error(`❌ Error in recording processing:`, error.message);
+      }
+    });
+
+    // Return 200 immediately to Twilio
+    res.status(200).send('OK');
+
+  } catch (error) {
+    console.error('Error in recording status callback:', error.message);
+    // Still respond 200 to Twilio to prevent retries
+    res.status(200).send('OK');
+  }
+});
+
 // Endpoint to start media stream
 app.post('/start-media-stream', async (req, res) => {
   const { to, message, speakFirst, initialMessage } = req.body;
@@ -1236,6 +1327,11 @@ app.post('/start-media-stream', async (req, res) => {
       from: twilioPhoneNumber,
       statusCallback: `${publicUrl}/call-events`,
       statusCallbackEvent: ["initiated", "ringing", "answered", "completed"],
+      record: true,
+      recordingChannels: 'mono',
+      recordingStatusCallback: `${publicUrl}/recording-status`,
+      recordingStatusCallbackMethod: 'POST',
+      recordingStatusCallbackEvent: ['completed']
     });
     res.json({
       success: true,
@@ -1672,6 +1768,255 @@ app.get('/transcripts', async (req, res) => {
     console.error('Exception fetching transcripts:', error);
     res.status(500).json({
       error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+// ============================================
+// RECORDING ENDPOINTS
+// ============================================
+
+// Get recording by call SID
+app.get('/api/recordings/:callSid', async (req, res) => {
+  const { callSid } = req.params;
+
+  if (!models || !models.CallRecording) {
+    return res.status(503).json({
+      success: false,
+      error: 'Recording service not available'
+    });
+  }
+
+  try {
+    const recording = await models.CallRecording.findByCallSid(callSid);
+
+    if (!recording) {
+      return res.status(404).json({
+        success: false,
+        error: 'Recording not found',
+        callSid
+      });
+    }
+
+    res.json({
+      success: true,
+      recording
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch recording',
+      message: error.message
+    });
+  }
+});
+
+// Get recordings by lead ID
+app.get('/api/lead/:leadId/recordings', async (req, res) => {
+  const { leadId } = req.params;
+  const { limit = 50, offset = 0 } = req.query;
+
+  if (!models || !models.CallRecording) {
+    return res.status(503).json({
+      success: false,
+      error: 'Recording service not available'
+    });
+  }
+
+  try {
+    const result = await models.CallRecording.findByLeadId(leadId, {
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+
+    res.json({
+      success: true,
+      leadId,
+      recordings: result,
+      count: result.length,
+      limit: parseInt(limit),
+      offset: parseInt(offset)
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch recordings',
+      message: error.message
+    });
+  }
+});
+
+// Get all recordings with pagination and filtering
+app.get('/api/recordings', async (req, res) => {
+  const {
+    limit = 50,
+    offset = 0,
+    status,
+    leadId,
+    dateFrom,
+    dateTo,
+    sortBy = 'created_at',
+    sortOrder = 'desc'
+  } = req.query;
+
+  if (!models || !models.CallRecording) {
+    return res.status(503).json({
+      success: false,
+      error: 'Recording service not available'
+    });
+  }
+
+  try {
+    const result = await models.CallRecording.findAll({
+      limit: parseInt(limit),
+      offset: parseInt(offset),
+      status,
+      leadId,
+      dateFrom,
+      dateTo,
+      sortBy,
+      sortOrder
+    });
+
+    res.json({
+      success: true,
+      recordings: result.data,
+      pagination: {
+        total: result.pagination.total,
+        count: result.data.length,
+        limit: parseInt(limit),
+        offset: parseInt(offset),
+        hasMore: result.pagination.hasMore
+      },
+      filters: {
+        status,
+        leadId,
+        dateFrom,
+        dateTo
+      },
+      sorting: {
+        sortBy,
+        sortOrder
+      }
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch recordings',
+      message: error.message
+    });
+  }
+});
+
+// Get recording statistics
+app.get('/api/recordings/stats', async (req, res) => {
+  if (!models || !models.CallRecording) {
+    return res.status(503).json({
+      success: false,
+      error: 'Recording service not available'
+    });
+  }
+
+  try {
+    const stats = await models.CallRecording.getStats();
+
+    res.json({
+      success: true,
+      stats
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch statistics',
+      message: error.message
+    });
+  }
+});
+
+// Download recording (redirect to signed URL)
+app.get('/api/recordings/:callSid/download', async (req, res) => {
+  const { callSid } = req.params;
+
+  if (!models || !models.CallRecording || !recordingManager) {
+    return res.status(503).json({
+      success: false,
+      error: 'Recording service not available'
+    });
+  }
+
+  try {
+    const recording = await models.CallRecording.findByCallSid(callSid);
+
+    if (!recording) {
+      return res.status(404).json({
+        success: false,
+        error: 'Recording not found'
+      });
+    }
+
+    // Get fresh signed URL
+    const signedUrl = await recordingManager.getSignedUrl(recording.storage_path, 3600);
+
+    if (!signedUrl) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to generate download URL'
+      });
+    }
+
+    // Redirect to signed URL
+    res.redirect(signedUrl);
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to download recording',
+      message: error.message
+    });
+  }
+});
+
+// Delete recording from storage and database
+app.delete('/api/recordings/:callSid', async (req, res) => {
+  const { callSid } = req.params;
+
+  if (!models || !models.CallRecording || !recordingManager) {
+    return res.status(503).json({
+      success: false,
+      error: 'Recording service not available'
+    });
+  }
+
+  try {
+    const recording = await models.CallRecording.findByCallSid(callSid);
+
+    if (!recording) {
+      return res.status(404).json({
+        success: false,
+        error: 'Recording not found'
+      });
+    }
+
+    // Delete from storage
+    const storageDeleted = await recordingManager.deleteFromStorage(recording.storage_path);
+
+    if (!storageDeleted) {
+      console.warn(`⚠️  Failed to delete from storage: ${recording.storage_path}`);
+    }
+
+    // Delete from database
+    await models.CallRecording.delete(callSid);
+
+    res.json({
+      success: true,
+      message: 'Recording deleted successfully',
+      callSid,
+      storagePath: recording.storage_path
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to delete recording',
       message: error.message
     });
   }

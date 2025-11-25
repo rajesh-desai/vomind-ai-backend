@@ -163,7 +163,7 @@ async function processCallJob(job) {
       }
     }
     
-    // Make the Twilio call
+    // Make the Twilio call with recording enabled
     const call = await twilioClient.calls.create({
       from: twilioPhoneNumber,
       to: to,
@@ -171,7 +171,11 @@ async function processCallJob(job) {
       statusCallback: `${publicUrl}/call-events`,
       statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
       statusCallbackMethod: 'POST',
-      record: false,
+      record: true,
+      recordingChannels: 'mono',
+      recordingStatusCallback: `${publicUrl}/recording-status`,
+      recordingStatusCallbackMethod: 'POST',
+      recordingStatusCallbackEvent: ['completed'],
       timeout: 30
     });
 
