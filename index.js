@@ -5,6 +5,7 @@ const WebSocket = require('ws');
 const cors = require('cors');
 const twilio = require('twilio');
 const { createClient } = require('@supabase/supabase-js');
+const crypto = require('crypto');
 const { validatePhoneNumber } = require('./utils/phoneValidator');
 const OpenAIRealtimeSession = require('./utils/openAIRealtime');
 const RecordingManager = require('./utils/recordingManager');
@@ -119,6 +120,229 @@ app.get('/', (req, res) => {
 app.get('/health', (req, res) => {
   res.send('VoMindAI is healthy!');
 });
+
+// ============================================
+// SHOPIFY WEBHOOK HANDLER - Abandoned Cart
+// ============================================
+
+/**
+ * Verifies Shopify webhook HMAC signature
+ * @param {string} requestBody - Raw request body as string
+ * @param {string} hmacHeader - X-Shopify-Hmac-SHA256 header value
+ * @returns {boolean} True if signature is valid
+ */
+const verifyShopifyWebhook = (requestBody, hmacHeader) => {
+  const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
+  if (!secret) {
+    console.warn('⚠️  SHOPIFY_WEBHOOK_SECRET not configured');
+    return false;
+  }
+
+  const hmac = crypto
+    .createHmac('sha256', secret)
+    .update(requestBody, 'utf8')
+    .digest('base64');
+
+  return hmac === hmacHeader;
+};
+
+/**
+ * Shopify webhook endpoint for abandoned cart notifications
+ * Captures cart data and creates a lead record
+ */
+app.post('/shopify/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+  const hmacHeader = req.headers['x-shopify-hmac-sha256'];
+  const topic = req.headers['x-shopify-topic'] || 'unknown';
+  
+  // Get raw body for HMAC verification
+  const rawBody = req.body.toString('utf8');
+
+  // Verify HMAC signature
+  if (!verifyShopifyWebhook(rawBody, hmacHeader)) {
+    console.warn('🚨 Shopify webhook HMAC verification failed');
+    return res.status(401).json({
+      success: false,
+      error: 'Invalid HMAC signature'
+    });
+  }
+
+  console.log(`✅ Shopify webhook verified - Topic: ${topic}`);
+
+  try {
+    // Parse JSON body
+    const payload = JSON.parse(rawBody);
+
+    if (!supabase || !models) {
+      console.warn('⚠️  Database not configured for Shopify webhook');
+      return res.status(503).json({
+        success: false,
+        error: 'Database not configured'
+      });
+    }
+
+    // Extract relevant data based on topic
+    let leadData = null;
+
+    if (topic.includes('cart/') || topic.includes('abandoned_cart')) {
+      // Handle abandoned cart / checkout webhook
+      leadData = await processShopifyAbandonedCart(payload);
+    } else if (topic.includes('customer/')) {
+      // Handle customer webhook
+      leadData = await processShopifyCustomer(payload);
+    } else {
+      console.log(`📋 Shopify webhook topic '${topic}' not configured for lead creation`);
+      return res.status(200).json({
+        success: true,
+        message: 'Webhook received but not processed'
+      });
+    }
+
+    if (!leadData || !leadData.email) {
+      console.log('⚠️  No valid lead data extracted from Shopify webhook');
+      return res.status(200).json({
+        success: true,
+        message: 'Webhook received, no lead data'
+      });
+    }
+
+    // Create lead in database
+    const lead = await models.Lead.create({
+      name: leadData.name || null,
+      email: leadData.email,
+      phone: leadData.phone || null,
+      company: leadData.company || null,
+      lead_source: 'shopify',
+      lead_status: 'new',
+      lead_priority: leadData.priority || 'medium',
+      message: leadData.message || null,
+      notes: leadData.notes || null,
+      metadata: leadData.metadata,
+      ip_address: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
+      user_agent: req.headers['user-agent'],
+      created_at: new Date().toISOString()
+    });
+
+    console.log(`✅ Lead created from Shopify webhook - ID: ${lead.id}, Email: ${lead.email}`);
+
+    res.status(201).json({
+      success: true,
+      message: 'Lead created successfully from Shopify webhook',
+      leadId: lead.id,
+      email: lead.email
+    });
+
+  } catch (error) {
+    console.error('❌ Error processing Shopify webhook:', error.message);
+    // Still return 200 to prevent Shopify from retrying
+    res.status(200).json({
+      success: false,
+      message: 'Webhook received but processing failed',
+      error: error.message
+    });
+  }
+});
+
+/**
+ * Process Shopify abandoned cart payload
+ * Extracts customer and cart information
+ */
+async function processShopifyAbandonedCart(payload) {
+  try {
+    // Payload can be either cart or checkout object
+    const cart = payload.cart || payload;
+    const customer = cart.customer || {};
+    const email = customer.email || cart.email;
+
+    if (!email) {
+      console.warn('⚠️  No email found in Shopify abandoned cart payload');
+      return null;
+    }
+
+    // Extract cart totals and items
+    const cartTotal = cart.subtotal_price || cart.total_price || 0;
+    const cartItems = (cart.line_items || []).map(item => ({
+      title: item.title,
+      quantity: item.quantity,
+      price: item.price,
+      sku: item.sku
+    }));
+
+    // Format phone if present
+    let phone = customer.phone || null;
+    if (phone) {
+      const phoneValidation = validatePhoneNumber(phone);
+      phone = phoneValidation.isValid ? phoneValidation.formatted : phone;
+    }
+
+    // Build metadata with cart details
+    const metadata = {
+      shopify_cart_token: cart.token,
+      shopify_customer_id: customer.id,
+      cart_total: cartTotal,
+      cart_items_count: (cart.line_items || []).length,
+      cart_items: cartItems,
+      cart_url: cart.cart_url || null,
+      abandoned_at: new Date().toISOString()
+    };
+
+    return {
+      name: `${customer.first_name || ''} ${customer.last_name || ''}`.trim(),
+      email: email,
+      phone: phone,
+      company: customer.company || null,
+      priority: 'high',
+      notes: `Abandoned cart with ${cartItems.length} items, total: $${cartTotal}`,
+      message: `Customer abandoned cart containing ${cartItems.map(i => i.title).join(', ')}`,
+      metadata: metadata
+    };
+  } catch (error) {
+    console.error('Error parsing Shopify abandoned cart:', error.message);
+    return null;
+  }
+}
+
+/**
+ * Process Shopify customer payload (optional - for customer create/update webhooks)
+ */
+async function processShopifyCustomer(payload) {
+  try {
+    const customer = payload;
+    const email = customer.email;
+
+    if (!email) {
+      console.warn('⚠️  No email found in Shopify customer payload');
+      return null;
+    }
+
+    // Format phone if present
+    let phone = customer.phone || null;
+    if (phone) {
+      const phoneValidation = validatePhoneNumber(phone);
+      phone = phoneValidation.isValid ? phoneValidation.formatted : phone;
+    }
+
+    const metadata = {
+      shopify_customer_id: customer.id,
+      customer_created_at: customer.created_at,
+      total_spent: customer.total_spent,
+      orders_count: customer.orders_count,
+      tags: customer.tags || []
+    };
+
+    return {
+      name: `${customer.first_name || ''} ${customer.last_name || ''}`.trim(),
+      email: email,
+      phone: phone,
+      company: customer.default_address?.company || null,
+      priority: 'medium',
+      notes: `Shopify customer with ${customer.orders_count} orders, spent $${customer.total_spent}`,
+      metadata: metadata
+    };
+  } catch (error) {
+    console.error('Error parsing Shopify customer:', error.message);
+    return null;
+  }
+}
 
 // POST endpoint to accept new lead information
 app.post('/api/new-lead', async (req, res) => {
