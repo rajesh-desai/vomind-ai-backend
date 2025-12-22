@@ -122,6 +122,67 @@ app.get('/health', (req, res) => {
 });
 
 // ============================================
+// AUTHENTICATION ROUTES
+// ============================================
+
+// Import and setup auth routes
+const createAuthRoutes = require('./routes/auth');
+const { verifyToken, requireRole, optionalAuth } = require('./middleware/auth');
+
+/*
+ * ============================================
+ * AUTHENTICATION PROTECTION APPLIED
+ * ============================================
+ * 
+ * PUBLIC ENDPOINTS (No auth required):
+ * - GET /
+ * - GET /health
+ * - POST /shopify/webhook (webhook signature verification)
+ * - POST /incoming-call (Twilio webhook)
+ * - POST /handle-key (Twilio webhook)
+ * - POST /voice-response (Twilio webhook)
+ * - POST /call-status (Twilio webhook)
+ * - POST /call-events (Twilio webhook)
+ * - POST /recording-status (Twilio webhook)
+ * - POST /start-media-stream (Twilio webhook)
+ * - POST /media-stream-twiml (Twilio webhook)
+ * - GET /media-stream-twiml (Twilio webhook)
+ * 
+ * PROTECTED ENDPOINTS (Require valid JWT token):
+ * - All /api/auth/* routes (login, verify, profile, etc.)
+ * - All /api/leads/* routes (CRUD operations)
+ * - All /api/queue/* routes (except admin-only ones)
+ * - All /api/call-stats, /api/lead-stats routes
+ * - All /api/automation/* routes (except admin-only ones)
+ * - All /api/agentCallLogs routes
+ * - All /api/transcripts/* routes
+ * - All /api/recordings/* routes (except delete)
+ * - All /conversation/* routes
+ * - /active-streams
+ * - /make-call
+ * 
+ * ADMIN-ONLY ENDPOINTS (Require admin role):
+ * - POST /api/queue/clean
+ * - POST /api/queue/pause
+ * - POST /api/queue/resume
+ * - DELETE /api/recordings/:callSid
+ * 
+ * ADMIN/MANAGER ENDPOINTS (Require admin or manager role):
+ * - POST /api/automation/schedule
+ * - POST /api/automation/stop/:jobId
+ * - POST /api/automation/run-now
+ */
+
+// Add auth routes if models are available
+if (models) {
+  const authRoutes = createAuthRoutes(models);
+  app.use('/api/auth', authRoutes);
+  console.log('🔐 Authentication routes initialized at /api/auth');
+} else {
+  console.warn('⚠️  Authentication routes not initialized - Supabase models not available');
+}
+
+// ============================================
 // SHOPIFY WEBHOOK HANDLER - Abandoned Cart
 // ============================================
 
@@ -345,7 +406,7 @@ async function processShopifyCustomer(payload) {
 }
 
 // POST endpoint to accept new lead information
-app.post('/api/new-lead', async (req, res) => {
+app.post('/api/new-lead', verifyToken, async (req, res) => {
   const {
     name,
     email,
@@ -432,7 +493,7 @@ app.post('/api/new-lead', async (req, res) => {
 });
 
 // GET endpoint to retrieve leads with pagination and filtering
-app.get('/api/leads', async (req, res) => {
+app.get('/api/leads', verifyToken, async (req, res) => {
   const {
     limit = 50,
     offset = 0,
@@ -485,7 +546,7 @@ app.get('/api/leads', async (req, res) => {
 });
 
 // GET endpoint to retrieve a single lead by ID
-app.get('/api/leads/:id', async (req, res) => {
+app.get('/api/leads/:id', verifyToken, async (req, res) => {
   const { id } = req.params;
 
   if (!supabase) {
@@ -520,7 +581,7 @@ app.get('/api/leads/:id', async (req, res) => {
 });
 
 // PUT endpoint to update a lead
-app.put('/api/leads/:id', async (req, res) => {
+app.put('/api/leads/:id', verifyToken, async (req, res) => {
   const { id } = req.params;
   const {
     name,
@@ -590,7 +651,7 @@ app.put('/api/leads/:id', async (req, res) => {
 });
 
 // POST endpoint to bulk import leads from file (CSV/JSON)
-app.post('/api/leads/import', async (req, res) => {
+app.post('/api/leads/import', verifyToken, async (req, res) => {
   // Check for file in request
   if (!req.files || !req.files.file) {
     return res.status(400).json({
@@ -690,7 +751,7 @@ app.post('/api/leads/import', async (req, res) => {
 });
 
 // Endpoint to make an outbound call
-app.post('/make-call', async (req, res) => {
+app.post('/make-call', verifyToken, async (req, res) => {
   const { to, message } = req.body;
 
   if (!to) {
@@ -806,7 +867,7 @@ app.post('/call-status', (req, res) => {
 // ============================================
 
 // Schedule an immediate outbound call
-app.post('/api/queue/schedule-call', async (req, res) => {
+app.post('/api/queue/schedule-call', verifyToken, async (req, res) => {
   const { to, message, lead_id, priority, metadata, speakFirst, initialMessage } = req.body;
   console.log('Scheduling immediate call with data:', req.body);
   if (!to) {
@@ -846,7 +907,7 @@ app.post('/api/queue/schedule-call', async (req, res) => {
 });
 
 // Schedule a delayed outbound call
-app.post('/api/queue/schedule-delayed-call', async (req, res) => {
+app.post('/api/queue/schedule-delayed-call', verifyToken, async (req, res) => {
   const { to, message, lead_id, priority, metadata, scheduleAt, delayMs, speakFirst, initialMessage } = req.body;
 
   if (!to) {
@@ -894,7 +955,7 @@ app.post('/api/queue/schedule-delayed-call', async (req, res) => {
 });
 
 // Schedule a recurring call
-app.post('/api/queue/schedule-recurring-call', async (req, res) => {
+app.post('/api/queue/schedule-recurring-call', verifyToken, async (req, res) => {
   const { to, message, lead_id, priority, metadata, cronExpression, speakFirst, initialMessage } = req.body;
 
   if (!to || !cronExpression) {
@@ -934,7 +995,7 @@ app.post('/api/queue/schedule-recurring-call', async (req, res) => {
 });
 
 // Schedule bulk calls
-app.post('/api/queue/schedule-bulk-calls', async (req, res) => {
+app.post('/api/queue/schedule-bulk-calls', verifyToken, async (req, res) => {
   const { calls } = req.body;
 
   if (!calls || !Array.isArray(calls) || calls.length === 0) {
@@ -962,7 +1023,7 @@ app.post('/api/queue/schedule-bulk-calls', async (req, res) => {
 });
 
 // Get job status
-app.get('/api/queue/job/:jobId', async (req, res) => {
+app.get('/api/queue/job/:jobId', verifyToken, async (req, res) => {
   const { jobId } = req.params;
 
   try {
@@ -989,7 +1050,7 @@ app.get('/api/queue/job/:jobId', async (req, res) => {
 });
 
 // Cancel a scheduled call
-app.delete('/api/queue/job/:jobId', async (req, res) => {
+app.delete('/api/queue/job/:jobId', verifyToken, async (req, res) => {
   const { jobId } = req.params;
 
   try {
@@ -1017,7 +1078,7 @@ app.delete('/api/queue/job/:jobId', async (req, res) => {
 });
 
 // Retry a failed call
-app.post('/api/queue/job/:jobId/retry', async (req, res) => {
+app.post('/api/queue/job/:jobId/retry', verifyToken, async (req, res) => {
   const { jobId } = req.params;
 
   try {
@@ -1038,7 +1099,7 @@ app.post('/api/queue/job/:jobId/retry', async (req, res) => {
 });
 
 // Get queue statistics
-app.get('/api/queue/stats', async (req, res) => {
+app.get('/api/queue/stats', verifyToken, async (req, res) => {
   try {
     const stats = await getQueueStats();
 
@@ -1056,7 +1117,7 @@ app.get('/api/queue/stats', async (req, res) => {
 });
 
 // Get call statistics (total, completed, failed)
-app.get('/api/call-stats', async (req, res) => {
+app.get('/api/call-stats', verifyToken, async (req, res) => {
   if (!supabase) {
     return res.status(503).json({
       success: false,
@@ -1107,7 +1168,7 @@ app.get('/api/call-stats', async (req, res) => {
 });
 
 // Get lead statistics (total, new, contacted)
-app.get('/api/lead-stats', async (req, res) => {
+app.get('/api/lead-stats', verifyToken, async (req, res) => {
   if (!supabase) {
     return res.status(503).json({
       success: false,
@@ -1155,7 +1216,7 @@ app.get('/api/lead-stats', async (req, res) => {
 });
 
 // Get waiting jobs
-app.get('/api/queue/waiting', async (req, res) => {
+app.get('/api/queue/waiting', verifyToken, async (req, res) => {
   const { start = 0, end = 10 } = req.query;
 
   try {
@@ -1176,7 +1237,7 @@ app.get('/api/queue/waiting', async (req, res) => {
 });
 
 // Get active jobs
-app.get('/api/queue/active', async (req, res) => {
+app.get('/api/queue/active', verifyToken, async (req, res) => {
   const { start = 0, end = 10 } = req.query;
 
   try {
@@ -1197,7 +1258,7 @@ app.get('/api/queue/active', async (req, res) => {
 });
 
 // Get failed jobs
-app.get('/api/queue/failed', async (req, res) => {
+app.get('/api/queue/failed', verifyToken, async (req, res) => {
   const { start = 0, end = 10 } = req.query;
 
   try {
@@ -1218,7 +1279,7 @@ app.get('/api/queue/failed', async (req, res) => {
 });
 
 // Clean old jobs
-app.post('/api/queue/clean', async (req, res) => {
+app.post('/api/queue/clean', verifyToken, requireRole('admin'), async (req, res) => {
   const { grace = 3600000, limit = 1000 } = req.body;
 
   try {
@@ -1239,7 +1300,7 @@ app.post('/api/queue/clean', async (req, res) => {
 });
 
 // Pause the queue
-app.post('/api/queue/pause', async (req, res) => {
+app.post('/api/queue/pause', verifyToken, requireRole('admin'), async (req, res) => {
   try {
     await pauseQueue();
 
@@ -1257,7 +1318,7 @@ app.post('/api/queue/pause', async (req, res) => {
 });
 
 // Resume the queue
-app.post('/api/queue/resume', async (req, res) => {
+app.post('/api/queue/resume', verifyToken, requireRole('admin'), async (req, res) => {
   try {
     await resumeQueue();
 
@@ -1283,7 +1344,7 @@ app.post('/api/queue/resume', async (req, res) => {
 // ============================================
 
 // Schedule automation to fetch new leads and call them
-app.post('/api/automation/schedule', async (req, res) => {
+app.post('/api/automation/schedule', verifyToken, requireRole(['admin', 'manager']), async (req, res) => {
   const { 
     cronExpression = '0 9 * * *',
     message = 'Hello from VoMindAI. We have an opportunity for you.',
@@ -1313,7 +1374,7 @@ app.post('/api/automation/schedule', async (req, res) => {
 });
 
 // Get all active automation schedules
-app.get('/api/automation/schedules', async (req, res) => {
+app.get('/api/automation/schedules', verifyToken, async (req, res) => {
   try {
     const schedules = await getAutomationSchedules();
 
@@ -1332,7 +1393,7 @@ app.get('/api/automation/schedules', async (req, res) => {
 });
 
 // Stop an automation schedule
-app.post('/api/automation/stop/:jobId', async (req, res) => {
+app.post('/api/automation/stop/:jobId', verifyToken, requireRole(['admin', 'manager']), async (req, res) => {
   const { jobId } = req.params;
 
   try {
@@ -1352,7 +1413,7 @@ app.post('/api/automation/stop/:jobId', async (req, res) => {
 });
 
 // Manually trigger automation (fetch new leads and schedule calls once)
-app.post('/api/automation/run-now', async (req, res) => {
+app.post('/api/automation/run-now', verifyToken, requireRole(['admin', 'manager']), async (req, res) => {
   const { 
     message = 'Hello from VoMindAI. We have an opportunity for you.',
     priority = 'normal',
@@ -1575,7 +1636,7 @@ app.post('/start-media-stream', async (req, res) => {
 });
 
 // POST endpoint to retrieve call events with pagination, sorting, and search
-app.post('/api/agentCallLogs', async (req, res) => {
+app.post('/api/agentCallLogs', verifyToken, async (req, res) => {
   const params = req.body && Object.keys(req.body).length > 0 ? req.body : req.query;
   const {
     limit = 50,
@@ -1898,7 +1959,7 @@ wss.on('connection', async (ws, req) => {
 });
 
 // Endpoint to get active media stream sessions
-app.get('/active-streams', (req, res) => {
+app.get('/active-streams', verifyToken, (req, res) => {
   const sessions = Array.from(activeSessions.entries()).map(([callSid, data]) => ({
     callSid,
     streamSid: data.streamSid,
@@ -1913,7 +1974,7 @@ app.get('/active-streams', (req, res) => {
 });
 
 // Endpoint to get conversation history for a specific call
-app.get('/conversation/:callSid', (req, res) => {
+app.get('/conversation/:callSid', verifyToken, (req, res) => {
   const { callSid } = req.params;
   const openAISession = openAISessions.get(callSid);
   console.log(`[${callSid}] Fetching conversation history`);
@@ -1933,7 +1994,7 @@ app.get('/conversation/:callSid', (req, res) => {
 });
 
 // Endpoint to get conversation transcripts from database
-app.get('/api/transcripts/:callSid', async (req, res) => {
+app.get('/api/transcripts/:callSid', verifyToken, async (req, res) => {
   const { callSid } = req.params;
   
   if (!supabase) {
@@ -1963,7 +2024,7 @@ app.get('/api/transcripts/:callSid', async (req, res) => {
 });
 
 // Endpoint to get all transcripts with pagination
-app.get('/transcripts', async (req, res) => {
+app.get('/transcripts', verifyToken, async (req, res) => {
   const { limit = 100, offset = 0 } = req.query;
   
   if (!supabase) {
@@ -2002,7 +2063,7 @@ app.get('/transcripts', async (req, res) => {
 // ============================================
 
 // Get recording by call SID
-app.get('/api/recordings/:callSid', async (req, res) => {
+app.get('/api/recordings/:callSid', verifyToken, async (req, res) => {
   const { callSid } = req.params;
 
   if (!models || !models.CallRecording) {
@@ -2037,7 +2098,7 @@ app.get('/api/recordings/:callSid', async (req, res) => {
 });
 
 // Get recordings by lead ID
-app.get('/api/lead/:leadId/recordings', async (req, res) => {
+app.get('/api/lead/:leadId/recordings', verifyToken, async (req, res) => {
   const { leadId } = req.params;
   const { limit = 50, offset = 0 } = req.query;
 
@@ -2072,7 +2133,7 @@ app.get('/api/lead/:leadId/recordings', async (req, res) => {
 });
 
 // Get all recordings with pagination and filtering
-app.get('/api/recordings', async (req, res) => {
+app.get('/api/recordings', verifyToken, async (req, res) => {
   const {
     limit = 50,
     offset = 0,
@@ -2134,7 +2195,7 @@ app.get('/api/recordings', async (req, res) => {
 });
 
 // Get recording statistics
-app.get('/api/recordings/stats', async (req, res) => {
+app.get('/api/recordings/stats', verifyToken, async (req, res) => {
   if (!models || !models.CallRecording) {
     return res.status(503).json({
       success: false,
@@ -2159,7 +2220,7 @@ app.get('/api/recordings/stats', async (req, res) => {
 });
 
 // Download recording (redirect to signed URL)
-app.get('/api/recordings/:callSid/download', async (req, res) => {
+app.get('/api/recordings/:callSid/download', verifyToken, async (req, res) => {
   const { callSid } = req.params;
 
   if (!models || !models.CallRecording || !recordingManager) {
@@ -2201,7 +2262,7 @@ app.get('/api/recordings/:callSid/download', async (req, res) => {
 });
 
 // Delete recording from storage and database
-app.delete('/api/recordings/:callSid', async (req, res) => {
+app.delete('/api/recordings/:callSid', verifyToken, requireRole(['admin', 'manager']), async (req, res) => {
   const { callSid } = req.params;
 
   if (!models || !models.CallRecording || !recordingManager) {
